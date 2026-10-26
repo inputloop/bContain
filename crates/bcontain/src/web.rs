@@ -293,6 +293,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .collect::<Result<_>>()
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
+                windows: body.windows,
                 gpu: body.gpu,
                 engine: body.engine.filter(|e| !e.is_empty()),
                 accel_mode: body.accel_mode,
@@ -362,6 +363,8 @@ struct CreateBody {
     ports: Vec<String>,
     #[serde(default)]
     legacy_devices: bool,
+    #[serde(default)]
+    windows: bool,
     disk_size: Option<String>,
     #[serde(default)]
     start: bool,

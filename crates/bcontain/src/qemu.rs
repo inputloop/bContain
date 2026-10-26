@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use bvmm::Accel;
 
-use crate::engine::{AccelMode, DiskBus, Display, Firmware, Hypervisor, Running, VmSpec};
+use crate::engine::{AccelMode, DiskBus, Display, Firmware, GuestOs, Hypervisor, Running, VmSpec};
 
 const EXE: &str = if cfg!(windows) {
     "qemu-system-x86_64.exe"
@@ -133,12 +133,22 @@ impl Qemu {
         // the guest has enabled it, and some Windows builds return it empty,
         // which kills QEMU ("failed to get xsave state: No error"). Old and
         // small guests do not need AVX.
+        let windows = spec.guest == GuestOs::Windows;
         let cpu = match (accel, pc_hw) {
             (_, true) => "max,-xsave,-avx,-avx2,-fma,-f16c,-avx-vnni,-vaes,-vpclmulqdq",
+            // Hyper-V enlightenments: Windows then uses KVM's paravirtual
+            // clock, timers and spinlocks instead of polling emulated hardware.
+            (Accel::Kvm, false) if windows => {
+                "host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_vpindex,hv_runtime,hv_time,hv_synic,hv_stimer,hv_frequencies"
+            }
             (Accel::Kvm, false) => "host",
             _ => "max",
         };
         push(&["-cpu", cpu]);
+        if windows {
+            // Windows keeps the hardware clock in local time.
+            push(&["-rtc", "base=localtime"]);
+        }
         let smp = format!("{0},sockets=1,cores={0},threads=1", spec.cpus);
         push(&["-smp", &smp]);
         let mem = format!("{}M", spec.memory_mib);
@@ -191,6 +201,15 @@ impl Qemu {
         let has_installer = spec.disks.iter().any(|d| d.installer);
         let mut next_boot = 1;
         let mut usb_controller = false;
+        // q35's AHCI controller has six ports with one drive each, so every
+        // SATA drive names its port; the i440FX's IDE buses take two each.
+        let mut sata_port = 0;
+        let mut ide_bus = |dev: &mut String| {
+            if !pc_hw {
+                dev.push_str(&format!(",bus=ide.{sata_port}"));
+                sata_port += 1;
+            }
+        };
         for (i, d) in spec.disks.iter().enumerate() {
             if d.cdrom {
                 has_cdrom = true;
@@ -198,7 +217,11 @@ impl Qemu {
                     "file={},format=raw,media=cdrom,readonly=on,if=none,id=cd{i}",
                     qemu_path(&d.path)
                 );
-                let dev = format!("ide-cd,drive=cd{i}");
+                let mut dev = format!("ide-cd,drive=cd{i}");
+                ide_bus(&mut dev);
+                if d.installer {
+                    dev.push_str(",bootindex=0");
+                }
                 push(&["-drive", &drive, "-device", &dev]);
                 continue;
             }
@@ -220,7 +243,11 @@ impl Qemu {
                     }
                     format!("usb-storage,bus=usbdisks.0,drive=disk{i},removable=on")
                 }
-                DiskBus::Auto if spec.legacy_devices || pc_hw => format!("ide-hd,drive=disk{i}"),
+                DiskBus::Auto if spec.legacy_devices || pc_hw => {
+                    let mut dev = format!("ide-hd,drive=disk{i}");
+                    ide_bus(&mut dev);
+                    dev
+                }
                 DiskBus::Auto => format!("virtio-blk-pci,drive=disk{i}"),
             };
             if has_installer {
@@ -390,6 +417,11 @@ impl Hypervisor for Qemu {
         Ok(())
     }
 
+    fn press_key(&self, running: &Running, key: &str) -> Result<()> {
+        let args = serde_json::json!({ "keys": [{ "type": "qcode", "data": key }] });
+        qmp_with(running.control_port, "send-key", Some(args))
+    }
+
     fn is_alive(&self, running: &Running) -> bool {
         let mut sys = sysinfo::System::new();
         let pid = sysinfo::Pid::from_u32(running.pid);
@@ -405,6 +437,11 @@ impl Hypervisor for Qemu {
 
 /// Send one QMP command and wait for its reply.
 fn qmp(port: u16, command: &str) -> Result<()> {
+    qmp_with(port, command, None)
+}
+
+/// Send one QMP command, with arguments, and wait for its reply.
+fn qmp_with(port: u16, command: &str, arguments: Option<serde_json::Value>) -> Result<()> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .with_context(|| format!("connecting to QMP on port {port}; is the VM running?"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -413,7 +450,13 @@ fn qmp(port: u16, command: &str) -> Result<()> {
     let mut line = String::new();
     reader.read_line(&mut line)?; // greeting
     for cmd in ["qmp_capabilities", command] {
-        writeln!(w, "{{\"execute\":\"{cmd}\"}}")?;
+        let mut msg = serde_json::json!({ "execute": cmd });
+        if cmd == command {
+            if let Some(a) = &arguments {
+                msg["arguments"] = a.clone();
+            }
+        }
+        writeln!(w, "{msg}")?;
         loop {
             line.clear();
             match reader.read_line(&mut line) {
@@ -621,6 +664,7 @@ mod tests {
             legacy_devices: false,
             accel_mode: AccelMode::Auto,
             gpu: None,
+            guest: GuestOs::Other,
         }
     }
 
@@ -677,6 +721,49 @@ mod tests {
         // Without an installer there is no explicit boot order.
         s.disks.pop();
         assert!(!q.args(&s, false).unwrap().join(" ").contains("bootindex"));
+    }
+
+    #[test]
+    fn windows_guest() {
+        let q = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Kvm,
+        };
+        let mut s = spec();
+        s.guest = GuestOs::Windows;
+        s.legacy_devices = true;
+        let cd = |path: &str, installer| Disk {
+            path: path.into(),
+            format: DiskFormat::Iso,
+            cdrom: true,
+            ephemeral: false,
+            bus: DiskBus::Auto,
+            installer,
+        };
+        s.disks = vec![
+            Disk {
+                path: "/vm/windows.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                cdrom: false,
+                ephemeral: false,
+                bus: DiskBus::Nvme,
+                installer: false,
+            },
+            cd("/img/Win11.iso", true),
+            cd("/vm/autounattend.iso", false),
+        ];
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("-cpu host,hv_relaxed,"));
+        assert!(a.contains("-rtc base=localtime"));
+        assert!(a.contains("nvme,drive=disk0,serial=bcontain0,bootindex=1"));
+        // One drive per AHCI port, the installer first in the boot order.
+        assert!(a.contains("ide-cd,drive=cd1,bus=ide.0,bootindex=0"));
+        assert!(a.contains("ide-cd,drive=cd2,bus=ide.1 "));
+        assert!(a.contains("e1000e,netdev=net0"));
+        // Classic PC hardware: the IDE buses pick their own units.
+        s.accel_mode = AccelMode::Compat;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("ide-cd,drive=cd2 ") && !a.contains("bus=ide."));
     }
 
     #[test]

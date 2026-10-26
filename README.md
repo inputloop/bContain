@@ -42,7 +42,7 @@ Choosing an image happens entirely in the window:
   Python, Node), or you can type the name of any public image.
 - Whatever you choose is identified straight away (ISO installer, VHDX disk,
   container image…). The name is filled in for you. ISOs get a new-disk-size
-  field, and Windows installers get **Windows guest** ticked automatically.
+  field, and Windows installers get **Windows 10/11 guest** ticked automatically.
 
 ![Choosing an image](docs/screenshots/choose-image.png)
 
@@ -58,6 +58,39 @@ enabling the Windows feature below once.
 > Xeon, no GPU and no KVM. That is why `doctor` flags everything there and
 > shows the fixes it would suggest. On the reference laptop those rows are
 > green.
+
+## Windows 10 and 11
+
+Pick a Windows ISO from Microsoft (for example `Win11_24H2_English_x64.iso`)
+and click **Add**. bContain recognises the disc by its label, so **Windows
+10/11 guest** is already ticked, and it sets the VM up the way Windows
+expects real hardware to look:
+
+- **UEFI firmware.** Windows 11 is a UEFI operating system, and recent builds
+  stop at the Windows logo under the old BIOS.
+- **A 128 GiB NVMe system disk, a SATA CD drive and an e1000e network card.**
+  Windows has drivers for all three built in, so there are no virtio drivers
+  to load during Setup.
+- **An answer disc** (`autounattend.iso`, built by bContain). Windows Setup
+  reads it on its own and switches off Windows 11's hardware checks, so it
+  installs without a TPM 2.0 chip or Secure Boot. Rufus offers the same
+  switch (Microsoft's documented `LabConfig` registry values). Every other
+  Setup screen is still yours. Windows 10 ignores the disc.
+- **"Press any key to boot from CD or DVD" is pressed for you** while the
+  system disk is still empty. Once Windows is installed, the prompt times out
+  and the VM starts from the disk.
+- **At least 4 vCPUs and 8 GiB of RAM**, the clock in local time as Windows
+  expects, and, on a Linux host, Hyper-V enlightenments so Windows uses KVM's
+  paravirtual clock and timers.
+
+After Setup finishes, stop the VM and click **Eject installer**. That detaches
+both discs.
+
+From the command line: `bcontain create win11 Win11.iso` (add
+`--windows` if your ISO has an unusual label).
+
+Windows needs a licence. Install it with your own product key, or run it
+unactivated as Microsoft allows.
 
 ## SteamOS
 
@@ -227,8 +260,7 @@ folder next to the binary takes priority, as on Windows.
   bContain lets QEMU use Hyper-V's own interrupt controller (APIC). Earlier
   versions forced `kernel-irqchip=off`, which moved interrupts into QEMU's
   userspace path, and that path aborts some guests (Tiny Core crashed).
-- **Windows guests:** use `--legacy-devices` (SATA disk + e1000e NIC) for stock
-  Windows installers, which ship without virtio drivers.
+- **Windows guests:** detected from the ISO; see [Windows 10 and 11](#windows-10-and-11).
 
 ## Troubleshooting a VM on Windows
 
@@ -272,7 +304,7 @@ line.
 | `ui [--port N] [--open]` | Web dashboard |
 
 Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--gpu`, `--preset`, `--cpus`, `--memory 16G`,
-`--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`,
+`--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`, `--windows`,
 `-p HOST:GUEST[/udp]`, `-e KEY=VALUE`, `--kernel`.
 
 ## How containers run

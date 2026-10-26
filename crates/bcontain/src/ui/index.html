@@ -203,7 +203,7 @@ button.big { padding: 9px 18px; }
             <option value="software">software (slow)</option>
           </select>
         </label>
-        <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows guest (SATA disk and e1000e network, no virtio drivers needed)</label>
+        <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows 10/11 guest (UEFI, NVMe disk, e1000e network; skips Windows 11's TPM check)</label>
         <label class="checkbox wide" id="gpuField" hidden><input type="checkbox" name="gpu"> Give the GPU to this VM for gaming (Linux host; the picture appears on the GPU's own output)</label>
         <label class="checkbox wide" id="nativeField" hidden><input type="checkbox" name="native"> Run on bContain's own hypervisor (experimental: 1 vCPU, no network yet)</label>
         <label class="checkbox wide"><input type="checkbox" name="start" checked> Start it right away</label>
@@ -419,7 +419,7 @@ createForm.addEventListener("submit", async (e) => {
       cpus: f.get("cpus") ? Number(f.get("cpus")) : null,
       disk_size: $("#diskField").hidden ? "" : f.get("disk_size"),
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
-      legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on",
+      legacy_devices: f.get("legacy") === "on", windows: f.get("legacy") === "on", start: f.get("start") === "on",
       accel_mode: f.get("accel_mode") || "auto",
       gpu: !$("#gpuField").hidden && f.get("gpu") === "on",
       engine: !$("#nativeField").hidden && f.get("native") === "on" ? "native" : "" });

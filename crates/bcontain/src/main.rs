@@ -8,7 +8,6 @@ mod engine;
 mod gpu;
 mod host;
 mod image;
-#[allow(dead_code)] // used by the Windows guest profile (in progress)
 mod iso;
 mod native;
 mod oci;
@@ -18,6 +17,7 @@ mod qemu;
 mod registry;
 mod store;
 mod web;
+mod windows;
 
 use std::path::PathBuf;
 
@@ -179,6 +179,10 @@ struct Tune {
     /// SATA + e1000e instead of virtio (stock Windows installers).
     #[arg(long)]
     legacy_devices: bool,
+    /// The ISO installs Windows 10/11 (usually detected from the disc):
+    /// UEFI, NVMe, e1000e, and an answer disc that skips Windows 11's TPM check.
+    #[arg(long)]
+    windows: bool,
     /// Forward a host port to the guest, HOST:GUEST (repeatable).
     #[arg(short = 'p', long = "port")]
     ports: Vec<String>,
@@ -241,6 +245,7 @@ impl Tune {
                 FirmwareArg::Uefi => Firmware::Uefi,
             }),
             legacy_devices: self.legacy_devices,
+            windows: self.windows,
             ephemeral: false,
             ports: self
                 .ports
@@ -332,7 +337,7 @@ fn real_main() -> Result<()> {
                 ops::gpu_release(&rec.spec)?;
                 std::process::exit(code?);
             }
-            let r = ops::start(&name)?;
+            let r = ops::start_and_wait(&name)?;
             println!(
                 "started `{name}` (pid {}, QMP 127.0.0.1:{})",
                 r.pid, r.control_port

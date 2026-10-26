@@ -9,7 +9,9 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::engine::{self, Disk, DiskBus, Display, Firmware, KernelBoot, PortForward, VmSpec};
+use crate::engine::{
+    self, Disk, DiskBus, Display, Firmware, GuestOs, KernelBoot, PortForward, VmSpec,
+};
 use crate::host::Host;
 use crate::image::{self, DiskFormat, ImageKind};
 use crate::oci;
@@ -41,6 +43,8 @@ pub struct CreateOptions {
     pub accel_mode: crate::engine::AccelMode,
     /// Hand the host's free GPU to this VM (Linux + KVM).
     pub gpu: bool,
+    /// The ISO installs Windows 10/11 (also detected from the disc itself).
+    pub windows: bool,
 }
 
 /// What `image` resolved to.
@@ -223,6 +227,7 @@ pub fn create(
         legacy_devices: opts.legacy_devices,
         accel_mode: opts.accel_mode,
         gpu: None,
+        guest: GuestOs::Other,
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);
@@ -280,6 +285,54 @@ pub fn create(
             if !opts.gpu {
                 log("  without a passed-through GPU, use Desktop Mode: Gaming Mode needs a Vulkan GPU".into());
             }
+        }
+        Resolved::Disk(path, DiskFormat::Iso)
+            if opts.windows || image::is_windows_installer(&path) =>
+        {
+            // Windows 11 is a UEFI operating system; recent builds no longer
+            // start under SeaBIOS (they stop at the Windows logo).
+            log("Windows installer: UEFI, NVMe system disk, SATA CD, e1000e network".into());
+            spec.guest = GuestOs::Windows;
+            spec.firmware = opts.firmware.unwrap_or(Firmware::Uefi);
+            spec.legacy_devices = true; // e1000e: Windows has the driver built in
+            if opts.cpus.is_none() {
+                spec.cpus = spec.cpus.max(4).min(host.threads as u32);
+            }
+            if opts.memory_mib.is_none() {
+                spec.memory_mib = spec.memory_mib.max(8 * 1024);
+            }
+            let size = opts.disk_mib.filter(|&s| s > 0).unwrap_or(128 * 1024);
+            let disk = dir.join("windows.qcow2");
+            log(format!("creating {} GiB NVMe system disk", size / 1024));
+            qemu_img_create(&disk, size)?;
+            spec.disks.push(Disk {
+                path: disk,
+                format: DiskFormat::Qcow2,
+                cdrom: false,
+                ephemeral: false,
+                bus: DiskBus::Nvme,
+                installer: false,
+            });
+            spec.disks.push(Disk {
+                path,
+                format: DiskFormat::Iso,
+                cdrom: true,
+                ephemeral: false,
+                bus: DiskBus::Auto,
+                installer: true,
+            });
+            let answers = crate::windows::answer_iso(&dir)?;
+            spec.disks.push(Disk {
+                path: answers,
+                format: DiskFormat::Iso,
+                cdrom: true,
+                ephemeral: false,
+                bus: DiskBus::Auto,
+                installer: false,
+            });
+            log("  answer disc added: Setup skips Windows 11's TPM, Secure Boot, CPU and RAM checks".into());
+            log("  \"Press any key to boot from CD\" is pressed for you on the first start".into());
+            log("  after installing, stop the VM and use Eject installer".into());
         }
         Resolved::Disk(path, format) => {
             let cdrom = format == DiskFormat::Iso;
@@ -452,6 +505,69 @@ impl Drop for DirGuard {
 }
 
 pub fn start(name: &str) -> Result<engine::Running> {
+    let (r, keys) = start_inner(name)?;
+    if let Some(k) = keys {
+        std::thread::spawn(move || k.press());
+    }
+    Ok(r)
+}
+
+/// [`start`] for the CLI, which exits as soon as it returns: waits until the
+/// boot prompt has been answered.
+pub fn start_and_wait(name: &str) -> Result<engine::Running> {
+    let (r, keys) = start_inner(name)?;
+    if let Some(k) = keys {
+        k.press();
+    }
+    Ok(r)
+}
+
+/// Windows install media asks "Press any key to boot from CD or DVD" and,
+/// left alone, falls through to the empty disk. Until Windows is installed,
+/// press Space for the person while the prompt can be up.
+pub struct BootKeys {
+    backend: String,
+    running: engine::Running,
+    seconds: u64,
+}
+
+impl BootKeys {
+    fn for_vm(rec: &store::VmRecord, running: &engine::Running) -> Option<BootKeys> {
+        let spec = &rec.spec;
+        let installing = spec.guest == GuestOs::Windows
+            && spec.disks.iter().any(|d| d.cdrom && d.installer)
+            && spec
+                .disks
+                .iter()
+                .find(|d| !d.cdrom)
+                .is_some_and(|d| crate::windows::disk_is_fresh(&d.path));
+        installing.then(|| BootKeys {
+            backend: rec.backend.clone(),
+            running: running.clone(),
+            // Setup's first screen, where Space would press a button, takes
+            // far longer than this to appear; in software mode much longer.
+            seconds: if spec.accel_mode == crate::engine::AccelMode::Software {
+                40
+            } else {
+                15
+            },
+        })
+    }
+
+    pub fn press(self) {
+        let Ok(hv) = engine::backend(&self.backend) else {
+            return;
+        };
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(self.seconds);
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        while std::time::Instant::now() < end && hv.is_alive(&self.running) {
+            let _ = hv.press_key(&self.running, "spc");
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    }
+}
+
+fn start_inner(name: &str) -> Result<(engine::Running, Option<BootKeys>)> {
     let mut rec = store::load(name)?;
     // Machines made before discs were checked for UEFI-only boot catalogs
     // (Bazzite, for one) sit at SeaBIOS's "code 0009"; switch them over.
@@ -480,7 +596,8 @@ pub fn start(name: &str) -> Result<engine::Running> {
         }
     };
     store::set_running(name, &r)?;
-    Ok(r)
+    let keys = BootKeys::for_vm(&rec, &r);
+    Ok((r, keys))
 }
 
 /// Take the VM's GPU away from the host (bind it to vfio-pci).

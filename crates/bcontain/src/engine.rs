@@ -107,6 +107,18 @@ pub struct VmSpec {
     /// A host GPU handed to the VM with VFIO (Linux + KVM only).
     #[serde(default)]
     pub gpu: Option<GpuPassthrough>,
+    /// What runs inside, where it changes the virtual hardware.
+    #[serde(default)]
+    pub guest: GuestOs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuestOs {
+    #[default]
+    Other,
+    /// Windows 10 or 11: clock in local time, Hyper-V enlightenments on KVM.
+    Windows,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +171,10 @@ pub trait Hypervisor {
     /// Ask the guest to power off (ACPI), or force it off.
     fn stop(&self, running: &Running, force: bool) -> Result<()>;
     fn is_alive(&self, running: &Running) -> bool;
+    /// Press and release a key in the guest (a QEMU `qcode` such as `spc`).
+    fn press_key(&self, _running: &Running, _key: &str) -> Result<()> {
+        anyhow::bail!("{} cannot send keys", self.name())
+    }
 }
 
 /// Pick the backend named by `name` ("qemu" or "native").
