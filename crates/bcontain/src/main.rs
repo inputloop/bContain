@@ -78,6 +78,8 @@ enum Cmd {
     List,
     /// Show a VM's definition and the exact backend command line.
     Info { name: String },
+    /// Detach a VM's installer (ISO or SteamOS recovery image) so it boots the installed system.
+    Eject { name: String },
     /// Print a VM's log (backend output and serial console).
     Logs { name: String },
     /// Delete a VM's definition and the disks bContain created for it.
@@ -387,6 +389,11 @@ fn real_main() -> Result<()> {
                 q.binary.display(),
                 qemu::shell_join(&q.args(&rec.spec, false)?)
             );
+            Ok(())
+        }
+        Cmd::Eject { name } => {
+            let n = ops::eject(&name)?;
+            println!("ejected {n} installer disk(s) from `{name}`; it now boots its own disk");
             Ok(())
         }
         Cmd::Logs { name } => {

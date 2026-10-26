@@ -24,6 +24,25 @@ pub struct Disk {
     /// Discard writes on shutdown (QEMU `snapshot=on`).
     #[serde(default)]
     pub ephemeral: bool,
+    /// Which controller the disk sits on.
+    #[serde(default)]
+    pub bus: DiskBus,
+    /// A boot medium to install from (e.g. SteamOS's recovery image): it
+    /// boots first until it is ejected.
+    #[serde(default)]
+    pub installer: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiskBus {
+    /// virtio-blk, or IDE/SATA for legacy and compatibility VMs.
+    #[default]
+    Auto,
+    /// An NVMe drive (SteamOS's installer writes to /dev/nvme0n1).
+    Nvme,
+    /// A USB stick on its own xHCI controller.
+    Usb,
 }
 
 /// Direct kernel boot, used for container micro-VMs.

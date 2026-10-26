@@ -59,6 +59,33 @@ enabling the Windows feature below once.
 > shows the fixes it would suggest. On the reference laptop those rows are
 > green.
 
+## SteamOS
+
+bContain installs Valve's SteamOS from its official recovery image
+(`steamdeck-repair-*.img.bz2`, from Valve's Steam Deck recovery page), the
+same way a Steam Deck does:
+
+1. Choose the `.img.bz2` in **Add a machine** (or
+   `bcontain create steamos steamdeck-repair-….img.bz2`). bContain unpacks it
+   once, attaches it as a **USB stick** that boots first (your download is
+   never modified), creates an **NVMe** target disk (128 GB, or 256 GB with
+   GPU passthrough), and uses UEFI.
+2. Start the VM. In the recovery desktop, double-click **Re-image Steam
+   Deck**. It installs onto the NVMe disk.
+3. Stop the VM, press **Eject installer** (or `bcontain eject steamos`), and
+   start it again: it boots the installed SteamOS.
+
+What to expect:
+
+| Host | SteamOS runs | Gaming Mode |
+|---|---|---|
+| Windows (WHPX) or Linux without passthrough | yes, with Desktop Mode (KDE + Steam) | unlikely: its compositor (gamescope) needs a Vulkan GPU, which a VM's virtual display does not provide |
+| Linux with the GPU passed through (`--gpu`) | yes | starts on the RTX 3080 Ti through Mesa's open NVK driver. Valve does not support NVIDIA, so games run slower than in Bazzite, which ships NVIDIA's driver |
+
+For the best gaming on this laptop, use Bazzite with GPU passthrough
+([docs/GPU-PASSTHROUGH.md](docs/GPU-PASSTHROUGH.md)). SteamOS is there when
+you want Valve's own system.
+
 ## Command line (both systems)
 
 Double-clicking runs `bcontain` with no arguments, which opens the app
@@ -238,6 +265,7 @@ line.
 | `pull REF` · `images` | Download and list registry images |
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
 | `gpu [status \| release NAME \| dump-vbios FILE \| set-rom NAME FILE]` | GPU passthrough: check this host, give a GPU back, save or attach a video BIOS |
+| `eject NAME` | Detach a VM's ISO or SteamOS installer so it boots what it installed |
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
 

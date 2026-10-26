@@ -288,6 +288,7 @@ async function loadVms() {
         <button class="primary" data-act="start" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Start</button>
         <button data-act="stop" data-n="${esc(v.name)}" ${run ? "" : "disabled"}>Stop</button>
         <button data-act="log" data-n="${esc(v.name)}">Log</button>
+        ${v.installer ? `<button data-act="eject" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Detach the ISO / installer so the VM boots what it installed">Eject installer</button>` : ""}
         <button class="danger" data-act="delete" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Delete</button>
       </div></td></tr>`;
   }).join("");
@@ -339,10 +340,12 @@ function showInfo(i) {
   $("#diskField").hidden = !i.iso;
   $("#nativeField").hidden = !(i.container && HOST && HOST.native && HOST.native.usable);
   $("#gpuField").hidden = !(HOST && HOST.gpu && HOST.gpu.linux) || !!i.container;
-  if (i.gaming && !$("#gpuField").hidden) {
-    createForm.elements.gpu.checked = !!HOST.gpu.ready;
-    if (!createForm.elements.preset.value) createForm.elements.preset.value = "gaming";
-    createForm.elements.disk_size.value = "256G";
+  if (i.gaming) {
+    // With a GPU to give, go all in; otherwise just leave room for games.
+    const canGpu = !$("#gpuField").hidden && !!HOST.gpu.ready;
+    createForm.elements.gpu.checked = canGpu;
+    if (canGpu && !createForm.elements.preset.value) createForm.elements.preset.value = "gaming";
+    createForm.elements.disk_size.value = canGpu ? "256G" : "128G";
   }
   const legacy = createForm.elements.legacy;
   if (!legacy.dataset.touched) legacy.checked = !!i.windows;

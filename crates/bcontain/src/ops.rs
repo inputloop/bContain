@@ -9,7 +9,7 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
-use crate::engine::{self, Disk, Display, Firmware, KernelBoot, PortForward, VmSpec};
+use crate::engine::{self, Disk, DiskBus, Display, Firmware, KernelBoot, PortForward, VmSpec};
 use crate::host::Host;
 use crate::image::{self, DiskFormat, ImageKind};
 use crate::oci;
@@ -56,6 +56,13 @@ pub fn resolve_image(image: &str, log: &mut dyn FnMut(String)) -> Result<Resolve
         return Ok(match image::sniff(p)? {
             ImageKind::Disk(f) => Resolved::Disk(fs::canonicalize(p)?, f),
             ImageKind::OciArchive | ImageKind::OciLayout => Resolved::Oci(fs::canonicalize(p)?),
+            ImageKind::Bzip2 => {
+                let out = decompress_bzip2(p, log)?;
+                match image::sniff(&out)? {
+                    ImageKind::Disk(f) => Resolved::Disk(out, f),
+                    _ => bail!("{} does not contain a disk image", p.display()),
+                }
+            }
         });
     }
     let r = Reference::parse(image)
@@ -68,6 +75,88 @@ pub fn resolve_image(image: &str, log: &mut dyn FnMut(String)) -> Result<Resolve
         })?;
     }
     Ok(Resolved::Oci(dir))
+}
+
+/// Unpack `src` (bzip2) once into the images folder and return the result.
+/// Reused on later runs; a partial file never takes the final name.
+fn decompress_bzip2(src: &Path, log: &mut dyn FnMut(String)) -> Result<PathBuf> {
+    let name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image.bz2");
+    let stem = name.strip_suffix(".bz2").unwrap_or(name);
+    let dir = store::images_dir().join("unpacked");
+    let out = dir.join(stem);
+    let src_len = fs::metadata(src)?.len();
+    let stamp = dir.join(format!("{stem}.from"));
+    let origin = format!("{}:{src_len}", fs::canonicalize(src)?.display());
+    if out.is_file() && fs::read_to_string(&stamp).is_ok_and(|s| s == origin) {
+        log(format!("using {} unpacked earlier", out.display()));
+        return Ok(out);
+    }
+    fs::create_dir_all(&dir)?;
+    log(format!(
+        "unpacking {name} ({} MiB, takes a few minutes)",
+        src_len >> 20
+    ));
+    let partial = dir.join(format!("{stem}.partial"));
+    let input = std::io::BufReader::new(fs::File::open(src)?);
+    let counted = CountingReader {
+        inner: input,
+        read: 0,
+    };
+    let mut decoder = bzip2::read::MultiBzDecoder::new(counted);
+    let mut output = std::io::BufWriter::new(fs::File::create(&partial)?);
+    let mut buf = vec![0u8; 1 << 20];
+    let mut written: u64 = 0;
+    let mut next_report = 1u64 << 30;
+    loop {
+        let n = std::io::Read::read(&mut decoder, &mut buf)
+            .with_context(|| format!("decompressing {name}"))?;
+        if n == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut output, &buf[..n])?;
+        written += n as u64;
+        if written >= next_report {
+            let pct = decoder.get_ref().read * 100 / src_len.max(1);
+            log(format!("  {} GiB unpacked ({pct}%)", written >> 30));
+            next_report += 1 << 30;
+        }
+    }
+    std::io::Write::flush(&mut output)?;
+    drop(output);
+    fs::rename(&partial, &out)?;
+    fs::write(&stamp, origin)?;
+    log(format!(
+        "  unpacked to {} ({} MiB)",
+        out.display(),
+        written >> 20
+    ));
+    Ok(out)
+}
+
+struct CountingReader<R> {
+    inner: R,
+    read: u64,
+}
+
+impl<R: std::io::Read> std::io::Read for CountingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read += n as u64;
+        Ok(n)
+    }
+}
+
+/// SteamOS's recovery image (`steamdeck-repair-*.img[.bz2]`): a USB-stick
+/// image whose "Re-image Steam Deck" installer writes to an NVMe drive.
+pub fn is_steamos_image(path: &Path) -> bool {
+    let n = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    n.contains("steamdeck-repair") || n.contains("steamdeck-recovery") || n.starts_with("steamos")
 }
 
 pub fn image_dir_name(r: &Reference) -> String {
@@ -154,6 +243,39 @@ pub fn create(
     }
 
     match resolved {
+        Resolved::Disk(path, format) if is_steamos_image(Path::new(&opts.image)) => {
+            // SteamOS installs like on a Steam Deck: boot the recovery image
+            // as a USB stick, run "Re-image Steam Deck", which writes to the
+            // NVMe drive. The recovery image itself is never modified.
+            log("SteamOS recovery image: installer on USB, target on NVMe, UEFI".into());
+            let size = opts
+                .disk_mib
+                .unwrap_or(if opts.gpu { 256 * 1024 } else { 128 * 1024 });
+            let disk = dir.join("steamos-nvme.qcow2");
+            log(format!("creating {} GiB NVMe disk", size / 1024));
+            qemu_img_create(&disk, size)?;
+            spec.disks.push(Disk {
+                path: disk,
+                format: DiskFormat::Qcow2,
+                cdrom: false,
+                ephemeral: false,
+                bus: DiskBus::Nvme,
+                installer: false,
+            });
+            spec.disks.push(Disk {
+                path,
+                format,
+                cdrom: false,
+                ephemeral: true,
+                bus: DiskBus::Usb,
+                installer: true,
+            });
+            spec.firmware = Firmware::Uefi;
+            log("  in the installer, double-click \"Re-image Steam Deck\"; then eject the installer".into());
+            if !opts.gpu {
+                log("  without a passed-through GPU, use Desktop Mode: Gaming Mode needs a Vulkan GPU".into());
+            }
+        }
         Resolved::Disk(path, format) => {
             let cdrom = format == DiskFormat::Iso;
             spec.disks.push(Disk {
@@ -161,6 +283,8 @@ pub fn create(
                 format,
                 cdrom,
                 ephemeral: opts.ephemeral && !cdrom,
+                bus: DiskBus::Auto,
+                installer: false,
             });
             if cdrom {
                 let size = opts.disk_mib.unwrap_or(if persist { 64 * 1024 } else { 0 });
@@ -179,6 +303,8 @@ pub fn create(
                             format: DiskFormat::Qcow2,
                             cdrom: false,
                             ephemeral: false,
+                            bus: DiskBus::Auto,
+                            installer: false,
                         },
                     );
                 }
@@ -433,6 +559,8 @@ pub struct VmView {
     /// the app can say why it stopped instead of it just vanishing.
     pub last_error: Option<String>,
     pub accel_mode: crate::engine::AccelMode,
+    /// An ISO or installer disk is still attached (offer "Eject installer").
+    pub installer: bool,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -447,6 +575,7 @@ pub fn views() -> Result<Vec<VmView>> {
         })
         .map(|(r, state)| VmView {
             accel_mode: r.spec.accel_mode,
+            installer: r.spec.disks.iter().any(|d| d.cdrom || d.installer),
             last_error: (state == store::State::Stopped)
                 .then(|| last_error(&store::log_path(&r.spec.name)))
                 .flatten(),
@@ -465,6 +594,24 @@ pub fn views() -> Result<Vec<VmView>> {
             ports: r.spec.ports,
         })
         .collect())
+}
+
+/// Remove a stopped VM's install media (ISO or installer disk), so it boots
+/// the installed system. The media files themselves are left alone.
+pub fn eject(name: &str) -> Result<usize> {
+    let mut rec = store::load(name)?;
+    let hv = engine::backend(&rec.backend)?;
+    if store::running(name, hv.as_ref()).is_some() {
+        bail!("stop `{name}` before ejecting its installer");
+    }
+    let before = rec.spec.disks.len();
+    rec.spec.disks.retain(|d| !d.cdrom && !d.installer);
+    let removed = before - rec.spec.disks.len();
+    if removed == 0 {
+        bail!("`{name}` has no installer attached");
+    }
+    store::save(&rec)?;
+    Ok(removed)
 }
 
 /// Change how a stopped VM uses the hardware hypervisor.
@@ -621,6 +768,17 @@ mod tests {
         );
         fs::write(&p, "# qemu-system-x86_64 -name t\nbooted fine\n").unwrap();
         assert!(last_error(&p).is_none());
+    }
+
+    #[test]
+    fn steamos_names() {
+        assert!(is_steamos_image(Path::new(
+            "/d/steamdeck-repair-20250521.10-3.7.7.img.bz2"
+        )));
+        assert!(is_steamos_image(Path::new(
+            "C:\\x\\steamdeck-recovery-4.img"
+        )));
+        assert!(!is_steamos_image(Path::new("/d/bazzite-deck-nvidia.iso")));
     }
 
     #[test]

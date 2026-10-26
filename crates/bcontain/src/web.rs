@@ -27,9 +27,10 @@ fn looks_like_gaming(path: &std::path::Path) -> bool {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    ["bazzite", "steamos", "holoiso", "chimeraos", "nobara"]
-        .iter()
-        .any(|k| n.contains(k))
+    crate::ops::is_steamos_image(path)
+        || ["bazzite", "steamos", "holoiso", "chimeraos", "nobara"]
+            .iter()
+            .any(|k| n.contains(k))
 }
 
 fn looks_like_windows(path: &std::path::Path) -> bool {
@@ -83,7 +84,8 @@ fn inspect(image: &str) -> Value {
                     "kind": kind,
                     "size_mib": size,
                     "container": kind == "container image",
-                    "iso": kind.starts_with("ISO"),
+                    // SteamOS installs onto a new disk, like an ISO does.
+                    "iso": kind.starts_with("ISO") || crate::ops::is_steamos_image(path),
                     "name": name,
                     // Stock Windows media has no virtio drivers; suggest SATA + e1000e.
                     "windows": looks_like_windows(path),
@@ -331,6 +333,10 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
             Ok(Reply::Json(
                 json!({ "name": rec.spec.name, "log": lines, "started": started }),
             ))
+        }
+        (Method::Post, ["api", "vms", name, "eject"]) => {
+            let n = ops::eject(name).map_err(bad)?;
+            Ok(Reply::Json(json!({ "ok": true, "ejected": n })))
         }
         (Method::Post, ["api", "vms", name, "accel", mode]) => {
             let mode: crate::engine::AccelMode = serde_json::from_value(json!(mode))

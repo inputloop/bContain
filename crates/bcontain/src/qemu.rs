@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use bvmm::Accel;
 
-use crate::engine::{AccelMode, Display, Firmware, Hypervisor, Running, VmSpec};
+use crate::engine::{AccelMode, DiskBus, Display, Firmware, Hypervisor, Running, VmSpec};
 
 const EXE: &str = if cfg!(windows) {
     "qemu-system-x86_64.exe"
@@ -186,6 +186,11 @@ impl Qemu {
         }
 
         let mut has_cdrom = false;
+        // With an installer attached, boot order is explicit: installer
+        // first, then the other disks. (`bootindex` overrides `-boot`.)
+        let has_installer = spec.disks.iter().any(|d| d.installer);
+        let mut next_boot = 1;
+        let mut usb_controller = false;
         for (i, d) in spec.disks.iter().enumerate() {
             if d.cdrom {
                 has_cdrom = true;
@@ -206,11 +211,25 @@ impl Qemu {
                 drive.push_str(",snapshot=on");
             }
             push(&["-drive", &drive]);
-            let dev = if spec.legacy_devices || pc_hw {
-                format!("ide-hd,drive=disk{i}")
-            } else {
-                format!("virtio-blk-pci,drive=disk{i}")
+            let mut dev = match d.bus {
+                DiskBus::Nvme => format!("nvme,drive=disk{i},serial=bcontain{i}"),
+                DiskBus::Usb => {
+                    if !usb_controller {
+                        push(&["-device", "qemu-xhci,id=usbdisks"]);
+                        usb_controller = true;
+                    }
+                    format!("usb-storage,bus=usbdisks.0,drive=disk{i},removable=on")
+                }
+                DiskBus::Auto if spec.legacy_devices || pc_hw => format!("ide-hd,drive=disk{i}"),
+                DiskBus::Auto => format!("virtio-blk-pci,drive=disk{i}"),
             };
+            if has_installer {
+                let index = if d.installer { 0 } else { next_boot };
+                if !d.installer {
+                    next_boot += 1;
+                }
+                dev.push_str(&format!(",bootindex={index}"));
+            }
             push(&["-device", &dev]);
         }
         if has_cdrom {
@@ -570,12 +589,16 @@ mod tests {
                     format: DiskFormat::Qcow2,
                     cdrom: false,
                     ephemeral: false,
+                    bus: DiskBus::Auto,
+                    installer: false,
                 },
                 Disk {
                     path: "/iso/x.iso".into(),
                     format: DiskFormat::Iso,
                     cdrom: true,
                     ephemeral: false,
+                    bus: DiskBus::Auto,
+                    installer: false,
                 },
             ],
             kernel: None,
@@ -616,6 +639,44 @@ mod tests {
         assert!(a.contains("-boot once=d"));
         assert!(a.contains("hostfwd=tcp:127.0.0.1:8080-:80,hostfwd=udp:127.0.0.1:47998-:47998"));
         assert!(a.contains("virtio-vga-gl"));
+    }
+
+    #[test]
+    fn steamos_disks() {
+        let q = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Kvm,
+        };
+        let mut s = spec();
+        s.disks = vec![
+            Disk {
+                path: "/vm/nvme.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                cdrom: false,
+                ephemeral: false,
+                bus: DiskBus::Nvme,
+                installer: false,
+            },
+            Disk {
+                path: "/img/steamdeck-repair.img".into(),
+                format: DiskFormat::Raw,
+                cdrom: false,
+                ephemeral: true,
+                bus: DiskBus::Usb,
+                installer: true,
+            },
+        ];
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("-device nvme,drive=disk0,serial=bcontain0,bootindex=1"));
+        assert!(a.contains("-device qemu-xhci,id=usbdisks"));
+        assert!(a.contains("usb-storage,bus=usbdisks.0,drive=disk1,removable=on,bootindex=0"));
+        assert!(a.contains(
+            "steamdeck-repair.img,format=raw,if=none,id=disk1,discard=unmap,snapshot=on"
+        ));
+        assert!(!a.contains("-boot once"));
+        // Without an installer there is no explicit boot order.
+        s.disks.pop();
+        assert!(!q.args(&s, false).unwrap().join(" ").contains("bootindex"));
     }
 
     #[test]

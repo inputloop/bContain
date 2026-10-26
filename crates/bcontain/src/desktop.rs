@@ -12,8 +12,8 @@ use serde::Serialize;
 use crate::image::{self, ImageKind};
 
 /// File extensions worth offering as images.
-const IMAGE_EXTS: [&str; 9] = [
-    "iso", "qcow2", "img", "raw", "vhdx", "vhd", "vmdk", "vdi", "tar",
+const IMAGE_EXTS: [&str; 10] = [
+    "iso", "qcow2", "img", "raw", "vhdx", "vhd", "vmdk", "vdi", "tar", "bz2",
 ];
 
 /// Open `url` in a chromeless app window (Edge/Chrome/Chromium `--app`).
@@ -97,7 +97,7 @@ pub fn pick_file() -> Result<Option<String>> {
             $o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true};\
             $d=New-Object System.Windows.Forms.OpenFileDialog;\
             $d.Title='Choose a virtual image';\
-            $d.Filter='VM and container images|*.iso;*.qcow2;*.img;*.raw;*.vhdx;*.vhd;*.vmdk;*.vdi;*.tar|All files|*.*';\
+            $d.Filter='VM and container images|*.iso;*.qcow2;*.img;*.raw;*.vhdx;*.vhd;*.vmdk;*.vdi;*.tar;*.bz2|All files|*.*';\
             if($d.ShowDialog($o) -eq 'OK'){$d.FileName}";
         let out =
             helper(Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]))
@@ -215,6 +215,9 @@ fn walk(dir: &Path, depth: u32, out: &mut Vec<Found>) {
 /// A short human label for an image file ("ISO installer", "VHDX disk",
 /// "container image"), or `None` if it is not something bContain can run.
 pub fn describe(p: &Path) -> Option<String> {
+    if crate::ops::is_steamos_image(p) {
+        return Some("SteamOS recovery image".into());
+    }
     Some(match image::sniff(p).ok()? {
         ImageKind::Disk(image::DiskFormat::Iso) => "ISO installer / live disc".into(),
         ImageKind::Disk(image::DiskFormat::Raw) => "raw disk".into(),
@@ -223,6 +226,7 @@ pub fn describe(p: &Path) -> Option<String> {
             f.qemu_name().to_uppercase().replace("VPC", "VHD")
         ),
         ImageKind::OciArchive | ImageKind::OciLayout => "container image".into(),
+        ImageKind::Bzip2 => "compressed disk image (bzip2)".into(),
     })
 }
 
@@ -230,7 +234,9 @@ pub fn describe(p: &Path) -> Option<String> {
 pub fn suggest_name(image: &str) -> String {
     let last = image.rsplit(['/', '\\']).next().unwrap_or(image);
     let base = match last.rsplit_once('.') {
-        Some((stem, ext)) if IMAGE_EXTS.contains(&ext.to_lowercase().as_str()) => stem,
+        Some((stem, ext)) if IMAGE_EXTS.contains(&ext.to_lowercase().as_str()) => {
+            stem.strip_suffix(".img").unwrap_or(stem)
+        }
         _ => last,
     };
     let base = base.replace(':', "-");

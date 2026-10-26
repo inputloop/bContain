@@ -97,6 +97,14 @@ comes with its fix. The app's **This machine** panel shows the same check as
 Bazzite's installer appears in QEMU's window. Install to the VM's disk and
 reboot into it.
 
+### Valve's SteamOS instead of Bazzite
+
+Choose SteamOS's recovery image (`steamdeck-repair-*.img.bz2`) with the GPU
+option. bContain sets up the USB installer and the NVMe disk; after
+**Re-image Steam Deck**, press **Eject installer**. SteamOS drives the
+RTX 3080 Ti with Mesa's open NVK driver (Valve ships no NVIDIA driver), so
+Gaming Mode works but is slower than Bazzite's.
+
 ## 5. Playing
 
 - **External monitor on the NVIDIA HDMI port:** Gaming Mode appears there.

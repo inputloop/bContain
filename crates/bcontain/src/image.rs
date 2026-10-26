@@ -44,6 +44,8 @@ pub enum ImageKind {
     OciArchive,
     /// OCI image-layout directory (contains `index.json` + `blobs/`).
     OciLayout,
+    /// A bzip2-compressed disk image (SteamOS's recovery image ships so).
+    Bzip2,
 }
 
 pub fn sniff(path: &Path) -> Result<ImageKind> {
@@ -80,6 +82,9 @@ pub fn sniff(path: &Path) -> Result<ImageKind> {
     // ustar magic at offset 257 means a tar archive: assume an OCI/docker image.
     if head.len() >= 262 && &head[257..262] == b"ustar" {
         return Ok(ImageKind::OciArchive);
+    }
+    if head.len() >= 4 && &head[..3] == b"BZh" && (b'1'..=b'9').contains(&head[3]) {
+        return Ok(ImageKind::Bzip2);
     }
     if head.starts_with(&[0x1f, 0x8b]) {
         anyhow::bail!(
@@ -161,5 +166,9 @@ mod tests {
             sniff(&tmp("r", &[0u8; 4096])).unwrap(),
             ImageKind::Disk(DiskFormat::Raw)
         );
+
+        let mut bz = b"BZh91AY&SY".to_vec();
+        bz.resize(1024, 0);
+        assert_eq!(sniff(&tmp("bz", &bz)).unwrap(), ImageKind::Bzip2);
     }
 }
