@@ -203,6 +203,36 @@ For the best gaming on this laptop, use Bazzite with GPU passthrough
 ([docs/GPU-PASSTHROUGH.md](docs/GPU-PASSTHROUGH.md)). SteamOS is there when
 you want Valve's own system.
 
+## alphaOS
+
+bContain knows the [alphaOS](https://github.com/inputloop/alphaOS) live ISO
+(`alphaos-live-*.iso`, or any disc labelled `ALPHAOS`) and sets it up the
+way alphaOS is tested:
+
+- **No disk.** alphaOS runs from its disc and never writes to a disk, so
+  none is made (pass `--disk-size` if you want one anyway). Everything
+  changed inside it is gone when the VM stops, as on a USB stick.
+- **2 to 4 vCPUs and 2 to 8 GiB of memory.** 2 GiB runs its desktop; at
+  8 GiB its local AI picks its biggest model. More would go unused.
+- **Standard VGA**, the display alphaOS is tested on (`--display virgl`
+  still opts in to 3D).
+- **Its boot receipt, read back.** A few minutes after it starts, alphaOS
+  checks its own services and prints the results on its serial port.
+  bContain keeps that port in the VM's `serial.log`, and the Machines list
+  shows **alphaOS ✔ receipt ok** (or how many checks failed; hover for the
+  lines). The receipt's `machine:` line says `bContain VM`, because
+  bContain names itself to the guest in the VM's SMBIOS.
+
+```
+bcontain create alphaos alphaos-live-ubuntu24.04-amd64.iso
+bcontain start alphaos
+bcontain receipt alphaos --wait 900     # exits 0 when the receipt says ok
+```
+
+On Windows, alphaOS's own builder (`Build-alphaOS-ISO.cmd`) offers to boot
+the ISO it just built in bContain when it finds `bContain.exe` beside the
+alphaOS folder, in `bContain\dist\`, or on `PATH`.
+
 ## Command line (both systems)
 
 Double-clicking runs `bcontain` with no arguments, which opens the app
@@ -408,6 +438,7 @@ line.
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
 | `gpu [status \| release NAME \| dump-vbios FILE \| set-rom NAME FILE]` | GPU passthrough: check this host, give a GPU back, save or attach a video BIOS |
 | `eject NAME` | Detach a VM's ISO or SteamOS installer so it boots what it installed |
+| `receipt NAME [--wait SECS]` | Show an alphaOS VM's boot receipt; exits 0 when it says ok |
 | `diagnose NAME` | Boot a stopped VM several ways without a window and report which reach the firmware's screen |
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |

@@ -68,8 +68,10 @@ fn inspect(image: &str) -> Value {
                     "kind": kind,
                     "size_mib": size,
                     "container": kind == "container image",
-                    // SteamOS installs onto a new disk, like an ISO does.
+                    // SteamOS installs onto a new disk, like an ISO does;
+                    // alphaOS runs live and needs none.
                     "iso": kind.starts_with("ISO") || crate::ops::is_steamos_image(path),
+                    "alphaos": crate::image::is_alphaos_iso(path),
                     "name": name,
                     // Stock Windows media has no virtio drivers; suggest SATA + e1000e.
                     "windows": looks_like_windows(path),

@@ -139,6 +139,10 @@ pub enum GuestOs {
     Other,
     /// Windows 10 or 11: clock in local time, Hyper-V enlightenments on KVM.
     Windows,
+    /// The alphaOS live ISO: its serial console (where it prints its boot
+    /// receipt) is kept in the VM's `serial.log`.
+    #[serde(rename = "alphaos")]
+    AlphaOs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

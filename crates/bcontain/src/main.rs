@@ -90,6 +90,14 @@ enum Cmd {
     Info { name: String },
     /// Detach a VM's installer (ISO or SteamOS recovery image) so it boots the installed system.
     Eject { name: String },
+    /// Show an alphaOS VM's boot receipt: the checks it ran on itself after booting.
+    Receipt {
+        name: String,
+        /// Wait up to this many seconds for the receipt to end (alphaOS
+        /// takes a few minutes with KVM or WHPX, much longer without).
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
+    },
     /// Change a stopped VM's hardware or display settings.
     Set {
         name: String,
@@ -596,6 +604,35 @@ fn real_main() -> Result<()> {
             let n = ops::eject(&name)?;
             println!("ejected {n} installer disk(s) from `{name}`; it now boots its own disk");
             Ok(())
+        }
+        Cmd::Receipt { name, wait } => {
+            let rec = store::load(&name)?;
+            if rec.spec.guest != engine::GuestOs::AlphaOs {
+                bail!("`{name}` is not an alphaOS VM; only alphaOS prints a boot receipt");
+            }
+            let hv = engine::backend(&rec.backend)?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+            let r = loop {
+                let running = store::running(&name, hv.as_ref()).is_some();
+                let r = ops::receipt(&rec.spec, running);
+                let pending = r.as_ref().is_some_and(|r| r.state == "waiting");
+                if !pending || std::time::Instant::now() >= deadline {
+                    break r;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            };
+            let Some(r) = r else {
+                bail!("`{name}` has not been started yet: `bcontain start {name}`");
+            };
+            for l in &r.lines {
+                println!("  {l}");
+            }
+            match r.state {
+                "ok" => Ok(()),
+                "fail" => bail!("alphaOS's receipt failed {} check(s)", r.fails),
+                "stopped" => bail!("`{name}` stopped before its receipt ended"),
+                _ => bail!("no receipt yet; `bcontain receipt {name} --wait 900` waits for it"),
+            }
         }
         Cmd::Logs { name } => {
             store::load(&name)?;

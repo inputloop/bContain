@@ -143,6 +143,20 @@ pub fn is_windows_installer(path: &Path) -> bool {
             || n.starts_with("win"))
 }
 
+/// The alphaOS live ISO (inputloop/alphaOS): its builder labels the disc
+/// `ALPHAOS` (`grub-mkrescue -volid ALPHAOS`); releases are named
+/// `alphaos-live-*.iso`.
+pub fn is_alphaos_iso(path: &Path) -> bool {
+    if iso_volume_id(path).is_some_and(|v| v.eq_ignore_ascii_case("ALPHAOS")) {
+        return true;
+    }
+    let n = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    n.starts_with("alphaos") && n.ends_with(".iso") && iso_volume_id(path).is_some()
+}
+
 /// What an ISO's El Torito boot catalog offers.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IsoBoot {
@@ -416,6 +430,38 @@ mod tests {
             "Win11_24H2_English_x64.iso",
             &iso_with_label("X")
         )));
+    }
+
+    #[test]
+    fn recognises_alphaos() {
+        let dir = std::env::temp_dir().join(format!("bcontain-alphaos-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let at = |name: &str, bytes: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, bytes).unwrap();
+            p
+        };
+        // By its label, whatever the file is called.
+        assert!(is_alphaos_iso(&at(
+            "renamed.iso",
+            &iso_with_label("ALPHAOS")
+        )));
+        // By the release name, when the label is something else.
+        assert!(is_alphaos_iso(&at(
+            "alphaos-live-ubuntu24.04-amd64.iso",
+            &iso_with_label("X")
+        )));
+        assert!(!is_alphaos_iso(&at(
+            "ubuntu.iso",
+            &iso_with_label("Ubuntu 24.04 LTS amd64")
+        )));
+        // The name alone is not enough: it must be an ISO.
+        assert!(!is_alphaos_iso(&at("alphaos-notes.iso", b"not a disc")));
+        assert!(!is_windows_installer(&at(
+            "alphaos-x.iso",
+            &iso_with_label("ALPHAOS")
+        )));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

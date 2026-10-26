@@ -430,6 +430,22 @@ impl Qemu {
                 }
             }
         }
+        if spec.guest == GuestOs::AlphaOs {
+            // alphaOS prints its boot receipt on the first serial port; keep
+            // it in a file bContain reads back (headless VMs already log their
+            // serial console). The SMBIOS names tell the guest who runs it.
+            if spec.display != Display::Headless {
+                let path = format!(
+                    "file,id=serial0,path={}",
+                    qemu_path(&crate::store::serial_log_path(&spec.name))
+                );
+                push(&["-chardev", &path, "-serial", "chardev:serial0"]);
+            }
+            push(&[
+                "-smbios",
+                "type=1,manufacturer=bContain,product=bContain VM",
+            ]);
+        }
         if spec.display != Display::Headless {
             if let Some((w, h)) = spec.resolution {
                 // The card offers this as the monitor's preferred mode; the
@@ -947,6 +963,30 @@ mod tests {
         assert!(a.contains("-boot once=d"));
         assert!(a.contains("hostfwd=tcp:127.0.0.1:8080-:80,hostfwd=udp:127.0.0.1:47998-:47998"));
         assert!(a.contains("virtio-vga-gl"));
+    }
+
+    #[test]
+    fn alphaos_serial_log() {
+        let q = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Kvm,
+            audio: None,
+        };
+        let mut s = spec();
+        s.guest = GuestOs::AlphaOs;
+        s.display = Display::Basic;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("-serial chardev:serial0"));
+        assert!(a.contains("serial.log"));
+        assert!(a.contains("-smbios type=1,manufacturer=bContain,product=bContain VM"));
+        // Headless: the serial console is already the VM's log.
+        s.display = Display::Headless;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(!a.contains("serial.log"));
+        assert!(a.contains("-serial stdio"));
+        // Other guests keep QEMU's own serial console.
+        let a = q.args(&spec(), false).unwrap().join(" ");
+        assert!(!a.contains("serial.log") && !a.contains("-smbios"));
     }
 
     #[test]

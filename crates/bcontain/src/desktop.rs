@@ -374,6 +374,9 @@ pub fn describe(p: &Path) -> Option<String> {
     if crate::ops::is_steamos_image(p) {
         return Some("SteamOS recovery image".into());
     }
+    if image::is_alphaos_iso(p) {
+        return Some("alphaOS live ISO".into());
+    }
     Some(match image::sniff(p).ok()? {
         ImageKind::Disk(image::DiskFormat::Iso) => "ISO installer / live disc".into(),
         // Raw is what sniff says of any file it does not recognise; a disk

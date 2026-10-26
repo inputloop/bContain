@@ -334,7 +334,8 @@ async function loadVms() {
     return `<tr>
       <td class="vmname"><b>${esc(v.name)}</b></td>
       <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span>
-        ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
+        ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}
+        ${v.receipt ? receiptLine(v.receipt) : ""}</td>
       <td><span class="kind">${esc(v.kind)}</span>
         ${v.kind === "vm" ? `<select class="accelSel" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Acceleration: if this VM shows nothing or crashes, try another mode">
           ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility (classic PC)", software: "software (slow)"}[m]}</option>`).join("")}
@@ -509,6 +510,13 @@ $("#settingsBody").addEventListener("click", (e) => {
     settingsAction(() => api("POST", `${url}/snapshot`, { action: "delete", name: b.dataset.s }), "Snapshot deleted.");
   }
 });
+// alphaOS checks itself after booting and prints a receipt on its serial port.
+function receiptLine(r) {
+  const what = { ok: "✔ receipt ok", fail: `✖ receipt: ${r.fails} check(s) failed`,
+    waiting: "booting: waiting for its receipt", stopped: "stopped before its receipt ended" }[r.state] || r.state;
+  const cls = r.state === "fail" || r.state === "stopped" ? "crash" : "where";
+  return `<div class="${cls}" title="${esc(r.lines.join("\n") || "alphaOS prints its receipt a few minutes after it starts")}">alphaOS ${esc(what)}</div>`;
+}
 async function showLog(n) {
   $("#logCard").hidden = false; $("#logTitle").textContent = `Log · ${n}`;
   $("#log").textContent = (await api("GET", `/api/vms/${encodeURIComponent(n)}/log`)) || "(empty)";
@@ -533,7 +541,8 @@ function showInfo(i) {
   el.className = "info" + (i.ok || !i.message ? "" : " err");
   if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#storageField").hidden = true; $("#nativeField").hidden = true; $("#gpuField").hidden = true; updateBanner(); return; }
   el.innerHTML = `<span class="tag">✔ ${esc(i.kind)}</span>` + (i.size_mib ? ` · ${size(i.size_mib)}` : "") +
-    (i.remote ? " · downloaded when you create it" : "");
+    (i.remote ? " · downloaded when you create it" : "") +
+    (i.alphaos ? " · runs live from the disc, no disk needed; its boot receipt shows under Machines" : "");
   const name = createForm.elements.name;
   if (!name.dataset.touched) name.value = i.name || "";
   $("#diskField").hidden = !i.iso;

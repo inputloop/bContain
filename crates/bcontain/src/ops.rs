@@ -171,6 +171,9 @@ impl<R: std::io::Read> std::io::Read for CountingReader<R> {
     }
 }
 
+/// The memory alphaOS's desktop needs (it uses about 530 MB of it).
+pub const ALPHAOS_MIN_MIB: u64 = 2048;
+
 /// SteamOS's recovery image (`steamdeck-repair-*.img[.bz2]`): a USB-stick
 /// image whose "Re-image Steam Deck" installer writes to an NVMe drive.
 pub fn is_steamos_image(path: &Path) -> bool {
@@ -331,6 +334,62 @@ pub fn create(
             if !opts.gpu {
                 log("  without a passed-through GPU, use Desktop Mode: Gaming Mode needs a Vulkan GPU".into());
             }
+        }
+        Resolved::Disk(path, DiskFormat::Iso) if !opts.windows && image::is_alphaos_iso(&path) => {
+            // alphaOS runs live from its disc and never writes to a disk, so
+            // it gets none unless asked. Its serial console carries the boot
+            // receipt, which bContain keeps and reads back.
+            log("alphaOS live ISO: runs from the disc, no disk needed".into());
+            spec.guest = GuestOs::AlphaOs;
+            if opts.cpus.is_none() {
+                spec.cpus = spec.cpus.clamp(2, 4).min(host.threads as u32);
+            }
+            if opts.memory_mib.is_none() {
+                // 2 GiB runs the desktop; at 8 GiB its local AI picks its
+                // biggest model. More than that goes unused.
+                spec.memory_mib = spec.memory_mib.clamp(ALPHAOS_MIN_MIB, 8 * 1024);
+            }
+            if spec.memory_mib < ALPHAOS_MIN_MIB {
+                log(format!(
+                    "  warning: alphaOS needs {ALPHAOS_MIN_MIB} MiB for its desktop; this VM has {} MiB",
+                    spec.memory_mib
+                ));
+            }
+            if opts.display.is_none() {
+                // Standard VGA is what alphaOS is tested on (tests/iso-boot.sh).
+                spec.display = Display::Basic;
+            }
+            spec.disks.push(Disk {
+                path,
+                format: DiskFormat::Iso,
+                cdrom: true,
+                ephemeral: false,
+                bus: DiskBus::Auto,
+                installer: false,
+            });
+            if let Some(size) = opts.disk_mib.filter(|&s| s > 0) {
+                let disk = disks_dir.join("disk.qcow2");
+                report_space(&disks_dir, size, log);
+                log(format!(
+                    "creating {} GiB disk {}",
+                    size / 1024,
+                    disk.display()
+                ));
+                qemu_img_create(&disk, size)?;
+                spec.disks.insert(
+                    0,
+                    Disk {
+                        path: disk,
+                        format: DiskFormat::Qcow2,
+                        cdrom: false,
+                        ephemeral: false,
+                        bus: DiskBus::Auto,
+                        installer: false,
+                    },
+                );
+            }
+            log("  everything changed inside it is gone when it stops, as on a USB stick".into());
+            log("  its boot receipt shows in the Machines list (`bcontain receipt NAME`)".into());
         }
         Resolved::Disk(path, DiskFormat::Iso)
             if opts.windows || image::is_windows_installer(&path) =>
@@ -833,6 +892,8 @@ pub struct VmView {
     pub diagnosing: bool,
     /// Has a passed-through GPU (cannot be diagnosed or switched off Auto).
     pub gpu: bool,
+    /// alphaOS VMs: what this boot's receipt says so far.
+    pub receipt: Option<Receipt>,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -854,9 +915,12 @@ pub fn views() -> Result<Vec<VmView>> {
                 .clone()
                 .unwrap_or_else(|| store::vm_dir(&r.spec.name)),
             accel_mode: r.spec.accel_mode,
-            installer: r.spec.disks.iter().any(|d| d.cdrom || d.installer),
+            // alphaOS runs from its disc; there is nothing to eject it for.
+            installer: r.spec.guest != GuestOs::AlphaOs
+                && r.spec.disks.iter().any(|d| d.cdrom || d.installer),
             diagnosing: crate::diagnose::busy(&r.spec.name),
             gpu: r.spec.gpu.is_some(),
+            receipt: receipt(&r.spec, state == store::State::Running),
             last_error: (state == store::State::Stopped)
                 .then(|| last_error(&store::log_path(&r.spec.name)))
                 .flatten(),
@@ -875,6 +939,86 @@ pub fn views() -> Result<Vec<VmView>> {
             ports: r.spec.ports,
         })
         .collect())
+}
+
+/// An alphaOS boot receipt, read from the guest's serial console. alphaOS
+/// checks its own services after booting and prints one line per check,
+/// each `alphaos-receipt: ...`, ending with `ALPHAOS-RECEIPT ok` or
+/// `ALPHAOS-RECEIPT FAIL (n)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Receipt {
+    /// `ok`, `fail`, `waiting` (still booting or checking) or `stopped`
+    /// (the VM stopped before the receipt ended).
+    pub state: &'static str,
+    /// Checks that failed.
+    pub fails: u32,
+    /// The receipt's lines, without the `alphaos-receipt: ` prefix.
+    pub lines: Vec<String>,
+}
+
+/// The receipt of the last boot in `text` (a serial log), if it has begun.
+pub fn parse_receipt(text: &str, running: bool) -> Option<Receipt> {
+    const TAG: &str = "alphaos-receipt: ";
+    let mut lines: Vec<String> = Vec::new();
+    let mut seen = false;
+    for raw in text.lines() {
+        let Some(at) = raw.find(TAG) else { continue };
+        let line = raw[at + TAG.len()..].trim_end().to_string();
+        // Each boot's receipt opens with "<OS>, kernel <v>, booted by BIOS|UEFI";
+        // a VM that rebooted shows the latest one.
+        if line.contains(", booted by ") {
+            lines.clear();
+        }
+        seen = true;
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    if !seen {
+        return running.then(|| Receipt {
+            state: "waiting",
+            fails: 0,
+            lines: Vec::new(),
+        });
+    }
+    let fails = lines.iter().filter(|l| l.starts_with("FAIL")).count() as u32;
+    let end = lines
+        .iter()
+        .rev()
+        .find(|l| l.starts_with("ALPHAOS-RECEIPT"));
+    let state = match end {
+        Some(l) if l.trim_end() == "ALPHAOS-RECEIPT ok" => "ok",
+        Some(_) => "fail",
+        None if running => "waiting",
+        None => "stopped",
+    };
+    Some(Receipt {
+        state,
+        fails,
+        lines,
+    })
+}
+
+/// An alphaOS VM's receipt for its current (or last) boot; `None` for other
+/// guests, and for an alphaOS VM that has not been started.
+pub fn receipt(spec: &VmSpec, running: bool) -> Option<Receipt> {
+    if spec.guest != GuestOs::AlphaOs {
+        return None;
+    }
+    // A headless VM's serial console is its backend log.
+    let path = if spec.display == Display::Headless {
+        store::log_path(&spec.name)
+    } else {
+        store::serial_log_path(&spec.name)
+    };
+    let bytes = fs::read(path).ok();
+    if bytes.is_none() && !running {
+        return None;
+    }
+    parse_receipt(
+        &String::from_utf8_lossy(&bytes.unwrap_or_default()),
+        running,
+    )
 }
 
 /// Remove a stopped VM's install media (ISO or installer disk), so it boots
@@ -1093,6 +1237,42 @@ mod tests {
         );
         fs::write(&p, "# qemu-system-x86_64 -name t\nbooted fine\n").unwrap();
         assert!(last_error(&p).is_none());
+    }
+
+    #[test]
+    fn reads_alphaos_receipts() {
+        let boot = "[    0.000000] Linux version 6.8.0\r
+alphaos-receipt: Ubuntu 24.04 LTS, kernel 6.8.0-147-generic, booted by BIOS\r
+alphaos-receipt: ok   C4OK answers on 127.0.0.1:8790\r
+alphaos-receipt: ok   C4OK answers on 127.0.0.1:8790\r
+";
+        let r = parse_receipt(boot, true).unwrap();
+        assert_eq!(r.state, "waiting");
+        assert_eq!(r.lines.len(), 2, "duplicates are dropped: {:?}", r.lines);
+        assert_eq!(parse_receipt(boot, false).unwrap().state, "stopped");
+
+        let done = format!("{boot}alphaos-receipt: ALPHAOS-RECEIPT ok\nalphaos-receipt: memory-with-desktop: 529 MB used\n");
+        let r = parse_receipt(&done, true).unwrap();
+        assert_eq!((r.state, r.fails), ("ok", 0));
+        assert_eq!(r.lines.last().unwrap(), "memory-with-desktop: 529 MB used");
+
+        let failed = format!(
+            "{boot}alphaos-receipt: FAIL the local AI (inactive)\nalphaos-receipt: ALPHAOS-RECEIPT FAIL (1)\n"
+        );
+        let r = parse_receipt(&failed, false).unwrap();
+        assert_eq!((r.state, r.fails), ("fail", 1));
+
+        // After a reboot, only the new boot counts.
+        let again =
+            format!("{failed}alphaos-receipt: Ubuntu 24.04 LTS, kernel 6.8, booted by UEFI\n");
+        let r = parse_receipt(&again, true).unwrap();
+        assert_eq!((r.state, r.fails, r.lines.len()), ("waiting", 0, 1));
+
+        assert_eq!(
+            parse_receipt("no receipt here\n", true).unwrap().state,
+            "waiting"
+        );
+        assert!(parse_receipt("", false).is_none());
     }
 
     #[test]

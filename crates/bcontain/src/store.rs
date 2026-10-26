@@ -6,6 +6,7 @@
 //! <data>/vms/<name>/vm.json    definition (VmSpec + metadata)
 //! <data>/vms/<name>/run.json   present while the VM runs (pid, QMP port)
 //! <data>/vms/<name>/qemu.log   backend output
+//! <data>/vms/<name>/serial.log the guest's serial console (alphaOS)
 //! <data>/images/<name>/        OCI image layout for pulled/imported images
 //! <data>/kernel/               guest kernel for container micro-VMs
 //! ```
@@ -201,6 +202,10 @@ pub fn state(name: &str, hv: &dyn Hypervisor) -> State {
 
 pub fn log_path(name: &str) -> PathBuf {
     vm_dir(name).join("qemu.log")
+}
+
+pub fn serial_log_path(name: &str) -> PathBuf {
+    vm_dir(name).join("serial.log")
 }
 
 fn write_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
