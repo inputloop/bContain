@@ -189,7 +189,11 @@ impl Qemu {
                 let disp = format!("{gui_backend},gl=on");
                 push(&["-device", "virtio-vga-gl", "-display", &disp]);
             }
-            Display::Basic => push(&["-device", "virtio-vga", "-display", gui_backend]),
+            // Standard VGA: every OS drives it (VGA text, VBE, Linux bochs-drm,
+            // Windows' basic display). virtio-vga hands its output over to a
+            // virtio-gpu driver, and guests that load it but never set a mode
+            // (e.g. Tiny Core) leave QEMU showing "Display output is not active".
+            Display::Basic => push(&["-vga", "std", "-display", gui_backend]),
             Display::Headless => {
                 push(&["-display", "none"]);
                 if foreground {
@@ -524,6 +528,11 @@ mod tests {
         assert!(a.contains("-accel whpx -cpu max"));
         assert!(!a.contains("kernel-irqchip"));
         assert!(a.contains("ide-hd,drive=disk0"));
+        let mut b = spec();
+        b.display = Display::Basic;
+        let b = q.args(&b, false).unwrap().join(" ");
+        assert!(b.contains("-vga std -display "));
+        assert!(!b.contains("virtio-vga"));
         assert!(a.contains("e1000e"));
         assert!(a.contains("-serial mon:stdio"));
         assert!(!a.contains("usb-tablet"));

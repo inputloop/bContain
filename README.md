@@ -185,7 +185,8 @@ folder next to the binary takes priority, as on Windows.
   dGPU / "Discrete only" (or use Advanced Optimus) so QEMU's window renders on
   the 3080 Ti rather than the iGPU. Virgl is the default on Linux. On Windows
   the default is `basic`, because GL support varies between QEMU Windows
-  builds; pass `--display virgl` to opt in.
+  builds; pass `--display virgl` to opt in. `basic` is a standard VGA card,
+  which every guest OS can drive (Tiny Core, DOS, Windows installers…).
 - **Hugepages (Linux):** `sudo sysctl vm.nr_hugepages=8192` reserves 16 GiB.
   bContain then backs guest RAM with hugepages automatically, and only when
   the pool can hold the guest.

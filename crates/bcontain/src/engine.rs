@@ -39,7 +39,7 @@ pub struct KernelBoot {
 pub enum Display {
     /// virtio-gpu with virgl 3D acceleration on the host GPU.
     Virgl,
-    /// virtio-vga without 3D (works everywhere).
+    /// Standard VGA without 3D: works with every guest OS.
     Basic,
     /// No window; serial console on stdio.
     Headless,
