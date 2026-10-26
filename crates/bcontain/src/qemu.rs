@@ -107,11 +107,17 @@ impl Qemu {
         // guests (a Tiny Core boot stalled reading its CD over AHCI).
         let pc_hw = spec.accel_mode == AccelMode::Compat;
         let chipset = if pc_hw { "pc" } else { "q35" };
-        let machine = if spec.hugepages {
-            format!("{chipset},memory-backend=ram0")
-        } else {
-            chipset.to_string()
-        };
+        let mut machine = chipset.to_string();
+        if spec.hugepages {
+            machine.push_str(",memory-backend=ram0");
+        }
+        // No HPET for Windows, as libvirt's and virt-manager's Windows
+        // profiles do: Windows otherwise drives its clock from QEMU's
+        // emulated HPET, which some builds hang on early in boot (the
+        // firmware's or Windows' logo, never the spinner).
+        if spec.guest == GuestOs::Windows {
+            machine.push_str(",hpet=off");
+        }
         push(&["-machine", &machine]);
         let accel = if spec.accel_mode == AccelMode::Software {
             Accel::None
@@ -758,6 +764,7 @@ mod tests {
         let a = q.args(&s, false).unwrap().join(" ");
         assert!(a.contains("-cpu host,hv_relaxed,"));
         assert!(a.contains("-rtc base=localtime"));
+        assert!(a.contains("-machine q35,hpet=off"));
         assert!(a.contains("nvme,drive=disk0,serial=bcontain0,bootindex=1"));
         // One drive per AHCI port, the installer first in the boot order.
         assert!(a.contains("ide-cd,drive=cd1,bus=ide.0,bootindex=0"));
