@@ -23,6 +23,42 @@ const EXE: &str = if cfg!(windows) {
 pub struct Qemu {
     pub binary: PathBuf,
     pub accel: Accel,
+    /// The `-audiodev` driver for VM sound, if this build and host have one.
+    pub audio: Option<String>,
+}
+
+/// Pick a sound output that this QEMU build has and that will actually
+/// open here: QEMU exits at startup if its audio driver cannot connect.
+fn detect_audio(binary: &Path) -> Option<String> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let out = crate::desktop::helper(Command::new(binary).args(["-audiodev", "help"]))
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&out.stdout).to_string();
+            let have = |d: &str| text.lines().any(|l| l.trim() == d);
+            let pick: Vec<&str> = if cfg!(windows) {
+                vec!["dsound", "sdl"]
+            } else {
+                // Only drivers whose server is running for this user.
+                let run = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+                let sock = |rel: &str| run.as_ref().is_some_and(|r| r.join(rel).exists());
+                let mut v = Vec::new();
+                if sock("pipewire-0") {
+                    v.push("pipewire");
+                }
+                if sock("pulse/native") {
+                    v.push("pa");
+                }
+                if Path::new("/dev/snd").exists() {
+                    v.push("alsa");
+                }
+                v
+            };
+            pick.into_iter().find(|d| have(d)).map(str::to_string)
+        })
+        .clone()
 }
 
 impl Qemu {
@@ -44,7 +80,12 @@ impl Qemu {
         } else {
             Accel::None
         };
-        Ok(Qemu { binary, accel })
+        let audio = detect_audio(&binary);
+        Ok(Qemu {
+            binary,
+            accel,
+            audio,
+        })
     }
 
     pub fn version(&self) -> Option<String> {
@@ -338,6 +379,21 @@ impl Qemu {
             } else {
                 push(&["-device", "qemu-xhci", "-device", "usb-tablet"]);
             }
+        }
+        // Sound for VMs with a screen: Intel HD Audio, which every OS
+        // drives. On classic PC hardware it interrupts on a plain IRQ line.
+        if let (Some(driver), true) = (&self.audio, spec.display != Display::Headless) {
+            let dev = format!("{driver},id=snd0");
+            push(&["-audiodev", &dev]);
+            push(&[
+                "-device",
+                if pc_hw {
+                    "intel-hda,msi=off"
+                } else {
+                    "intel-hda"
+                },
+            ]);
+            push(&["-device", "hda-duplex,audiodev=snd0"]);
         }
         if spec.no_reboot {
             push(&["-no-reboot"]);
@@ -706,6 +762,7 @@ mod tests {
         let q = Qemu {
             binary: "/usr/bin/qemu-system-x86_64".into(),
             accel: Accel::Kvm,
+            audio: None,
         };
         let a = q.args(&spec(), false).unwrap().join(" ");
         assert!(a.contains("-accel kvm -cpu host"));
@@ -724,6 +781,7 @@ mod tests {
         let q = Qemu {
             binary: "qemu".into(),
             accel: Accel::Kvm,
+            audio: None,
         };
         let mut s = spec();
         s.disks = vec![
@@ -758,10 +816,35 @@ mod tests {
     }
 
     #[test]
+    fn sound() {
+        let q = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Kvm,
+            audio: Some("pa".into()),
+        };
+        let mut s = spec();
+        s.display = Display::Basic;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(
+            a.contains("-audiodev pa,id=snd0 -device intel-hda -device hda-duplex,audiodev=snd0")
+        );
+        s.accel_mode = AccelMode::Compat;
+        assert!(q
+            .args(&s, false)
+            .unwrap()
+            .join(" ")
+            .contains("intel-hda,msi=off"));
+        // Containers and other windowless VMs stay silent.
+        s.display = Display::Headless;
+        assert!(!q.args(&s, false).unwrap().join(" ").contains("audiodev"));
+    }
+
+    #[test]
     fn windows_guest() {
         let q = Qemu {
             binary: "qemu".into(),
             accel: Accel::Kvm,
+            audio: None,
         };
         let mut s = spec();
         s.guest = GuestOs::Windows;
@@ -810,6 +893,7 @@ mod tests {
         let q = Qemu {
             binary: "/usr/bin/qemu-system-x86_64".into(),
             accel: Accel::Kvm,
+            audio: None,
         };
         let mut s = spec();
         s.gpu = Some(crate::engine::GpuPassthrough {
@@ -825,6 +909,7 @@ mod tests {
         let w = Qemu {
             binary: "qemu".into(),
             accel: Accel::Whp,
+            audio: None,
         };
         assert!(w.args(&s, false).unwrap_err().to_string().contains("KVM"));
     }
@@ -834,6 +919,7 @@ mod tests {
         let q = Qemu {
             binary: "qemu".into(),
             accel: Accel::Whp,
+            audio: None,
         };
         let mut s = spec();
         s.legacy_devices = true;
