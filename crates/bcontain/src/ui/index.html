@@ -410,6 +410,16 @@ async function showSettings(n) {
     <p class="note">${esc([!d.tpm && d.tpm_blocker, !d.secure_boot && d.secure_boot_blocker].filter(Boolean).join(" ")) ||
       "Windows 11 wants both. Switching Secure Boot starts the firmware's settings afresh (boot entries included); Windows still boots."}</p>`;
   }
+  if (!d.native && d.has_display) {
+    const blocked = !d.shared_folder && d.share_blocker;
+    html += `<h3>Shared folder</h3><div class="row">
+      <label style="grid-column: span 3">Host folder the VM can open
+        <span class="pathrow"><input name="shared_folder" value="${esc(d.shared_folder)}" placeholder="none" ${dis || (blocked ? "disabled" : "")}>
+        <button type="button" id="pickShare" ${dis || (blocked ? "disabled" : "")}>Browse…</button></span></label></div>
+    <p class="note">${blocked ? esc(d.share_blocker) : `In the VM, open <b>${esc(d.share_path)}</b>${HOST && HOST.os === "windows"
+      ? " and sign in with your Windows user name and password. Saving asks for administrator approval once, to create the share."
+      : " (Linux guests: <span class=mono>sudo mount -t cifs //10.0.2.4/qemu /mnt -o guest</span>)."}`}</p>`;
+  }
   html += `<div class="row" style="margin-top:10px"><div><button class="primary" id="saveSettings" ${dis}>Save settings</button></div></div>`;
   if (d.disk) html += `<h3>Disk</h3>
     <p class="note">${esc(d.disk.path)} · ${esc(d.disk.format)} · ${d.disk.size_mib ? size(d.disk.size_mib) : "size unknown"}</p>
@@ -442,8 +452,14 @@ $("#settingsBody").addEventListener("click", (e) => {
       cpus: Number(f("cpus").value), memory: f("memory").value,
       ports: f("ports").value.split(",").map(s => s.trim()).filter(Boolean),
       ...(f("resolution") ? { resolution: f("resolution").value, fullscreen: f("fullscreen").checked } : {}),
-      ...(f("tpm") ? { tpm: f("tpm").checked, secure_boot: f("secure_boot").checked } : {}) }),
+      ...(f("tpm") ? { tpm: f("tpm").checked, secure_boot: f("secure_boot").checked } : {}),
+      ...(f("shared_folder") && !f("shared_folder").disabled ? { shared_folder: f("shared_folder").value } : {}) }),
     "Saved. The changes apply the next time the VM starts.");
+  else if (b.id === "pickShare") {
+    b.disabled = true;
+    api("POST", "/api/pick-folder").then(r => { if (r.path) f("shared_folder").value = r.path; })
+      .catch(err => alert(err.message)).finally(() => b.disabled = false);
+  }
   else if (b.id === "growDisk") settingsAction(() => api("POST", `${url}/resize`, { size: f("grow").value }),
     "Disk grown. Extend the partition inside the guest to use the new space.");
   else if (b.id === "takeSnap") settingsAction(() => api("POST", `${url}/snapshot`, { action: "take", name: f("snapName").value }),

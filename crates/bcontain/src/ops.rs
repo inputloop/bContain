@@ -269,6 +269,7 @@ pub fn create(
         resolution: None,
         tpm: false,
         secure_boot: false,
+        shared_folder: None,
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);

@@ -123,6 +123,10 @@ pub struct VmSpec {
     /// SMM, which WHPX lacks).
     #[serde(default)]
     pub secure_boot: bool,
+    /// A host folder the guest can open over the network: QEMU's own SMB
+    /// share on Linux hosts, a Windows share on Windows hosts.
+    #[serde(default)]
+    pub shared_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

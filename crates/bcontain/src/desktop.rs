@@ -146,6 +146,116 @@ pub fn pick_file() -> Result<Option<String>> {
     }
 }
 
+/// The Windows share a VM's shared folder is published as.
+pub fn share_name(vm: &str) -> String {
+    format!("bcontain-{vm}")
+}
+
+#[cfg(any(windows, test))]
+/// Standard base64, for PowerShell's -EncodedCommand.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            out.push(if i <= c.len() {
+                T[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod b64_tests {
+    #[test]
+    fn base64_matches_the_standard() {
+        assert_eq!(super::base64(b""), "");
+        assert_eq!(super::base64(b"f"), "Zg==");
+        assert_eq!(super::base64(b"fo"), "Zm8=");
+        assert_eq!(super::base64(b"foobar"), "Zm9vYmFy");
+        // What `[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('dir'))` gives.
+        assert_eq!(super::encode_powershell("dir"), "ZABpAHIA");
+    }
+}
+
+#[cfg(any(windows, test))]
+/// A PowerShell script for `powershell -EncodedCommand`: UTF-16LE, base64.
+/// Paths and names travel inside it without any quoting by the shell.
+pub fn encode_powershell(script: &str) -> String {
+    base64(
+        &script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Run a PowerShell script as administrator: Windows shows its UAC prompt.
+/// Declining it is an error.
+#[cfg(windows)]
+fn run_elevated(script: &str) -> Result<()> {
+    let outer = format!(
+        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+         -ArgumentList '-NoProfile','-EncodedCommand','{}'; exit $p.ExitCode",
+        encode_powershell(script)
+    );
+    let out =
+        helper(Command::new("powershell").args(["-NoProfile", "-Command", &outer])).output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "sharing needs administrator approval, which was declined or failed ({})",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Publish `dir` as a Windows share that only this user can open, so a VM
+/// reaches it at \\10.0.2.2\bcontain-NAME. `None` removes the share.
+#[cfg(windows)]
+pub fn windows_share(vm: &str, dir: Option<&Path>) -> Result<()> {
+    let q = |s: &str| s.replace('\'', "''");
+    let name = share_name(vm);
+    let user = format!(
+        "{}\\{}",
+        std::env::var("USERDOMAIN").unwrap_or_default(),
+        std::env::var("USERNAME").unwrap_or_default()
+    );
+    let mut script = format!(
+        "$ErrorActionPreference='Stop'; \
+         if (Get-SmbShare -Name '{n}' -ErrorAction SilentlyContinue) {{ Remove-SmbShare -Name '{n}' -Force }}; ",
+        n = q(&name)
+    );
+    if let Some(dir) = dir {
+        script.push_str(&format!(
+            "New-SmbShare -Name '{}' -Path '{}' -FullAccess '{}' | Out-Null",
+            q(&name),
+            q(&dir.display().to_string()),
+            q(&user)
+        ));
+    }
+    run_elevated(&script)
+}
+
+#[cfg(not(windows))]
+pub fn windows_share(_vm: &str, _dir: Option<&Path>) -> Result<()> {
+    Ok(())
+}
+
+/// Samba's smbd, which QEMU runs for a Linux host's shared folders.
+pub fn smbd() -> Option<PathBuf> {
+    ["/usr/sbin/smbd", "/usr/bin/smbd", "/usr/local/sbin/smbd"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+}
+
 /// Show the OS "choose folder" dialog. `Ok(None)` means the user cancelled.
 pub fn pick_folder() -> Result<Option<String>> {
     #[cfg(windows)]

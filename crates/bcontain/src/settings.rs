@@ -44,6 +44,28 @@ pub struct Patch {
     pub resolution: Option<String>,
     pub tpm: Option<bool>,
     pub secure_boot: Option<bool>,
+    /// A host folder to share with the guest; "" stops sharing.
+    pub shared_folder: Option<String>,
+}
+
+/// Why `spec` cannot share a folder here, if it cannot.
+pub fn share_blocker(spec: &VmSpec) -> Option<&'static str> {
+    if spec.kernel.is_some() {
+        Some("Containers can't open network shares.")
+    } else if !cfg!(windows) && crate::desktop::smbd().is_none() {
+        Some("Install Samba to share folders: sudo apt install samba (or dnf install samba).")
+    } else {
+        None
+    }
+}
+
+/// Where the guest finds the shared folder.
+pub fn share_path(vm: &str) -> String {
+    if cfg!(windows) {
+        format!("\\\\10.0.2.2\\{}", crate::desktop::share_name(vm))
+    } else {
+        "\\\\10.0.2.4\\qemu".into()
+    }
 }
 
 /// Why this VM cannot have a TPM here, if it cannot.
@@ -149,6 +171,25 @@ pub fn apply(name: &str, host: &Host, patch: &Patch) -> Result<VmRecord> {
             }
         }
         spec.tpm = t;
+    }
+    if let Some(f) = &patch.shared_folder {
+        let dir = Some(f.trim()).filter(|f| !f.is_empty()).map(PathBuf::from);
+        if let Some(d) = &dir {
+            if let Some(why) = share_blocker(spec) {
+                bail!("{why}");
+            }
+            if !d.is_absolute() || !d.is_dir() {
+                bail!("{} is not a folder (give its full path)", d.display());
+            }
+        }
+        if dir != spec.shared_folder {
+            // Windows hosts publish the folder as a share (a UAC prompt);
+            // Linux hosts need nothing until QEMU starts.
+            if cfg!(windows) && (dir.is_some() || spec.shared_folder.is_some()) {
+                crate::desktop::windows_share(name, dir.as_deref())?;
+            }
+            spec.shared_folder = dir;
+        }
     }
     if let Some(sb) = patch.secure_boot.filter(|&sb| sb != spec.secure_boot) {
         if sb {
@@ -378,6 +419,10 @@ pub struct Details {
     pub secure_boot: bool,
     /// Why a TPM or Secure Boot cannot be switched on here.
     pub tpm_blocker: Option<&'static str>,
+    pub shared_folder: String,
+    /// The path the guest opens it at.
+    pub share_path: String,
+    pub share_blocker: Option<&'static str>,
     pub secure_boot_blocker: Option<&'static str>,
     pub host_threads: usize,
     pub host_memory_mib: u64,
@@ -425,6 +470,13 @@ pub fn details(name: &str, host: &Host) -> Result<Details> {
         tpm: s.tpm,
         secure_boot: s.secure_boot,
         tpm_blocker: tpm_blocker(),
+        shared_folder: s
+            .shared_folder
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+        share_path: share_path(name),
+        share_blocker: share_blocker(s),
         secure_boot_blocker: secure_boot_blocker(s),
         host_threads: host.threads,
         host_memory_mib: host.memory_mib,

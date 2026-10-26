@@ -384,6 +384,11 @@ impl Qemu {
         }
 
         let mut netdev = "user,id=net0".to_string();
+        // Linux hosts: QEMU runs Samba's smbd for the guest, which sees the
+        // folder at \\10.0.2.4\qemu. (Windows hosts share it themselves.)
+        if let (Some(dir), false) = (&spec.shared_folder, cfg!(windows)) {
+            netdev.push_str(&format!(",smb={}", qemu_path(dir)));
+        }
         for p in &spec.ports {
             let proto = if p.udp { "udp" } else { "tcp" };
             netdev.push_str(&format!(
@@ -901,6 +906,7 @@ mod tests {
             resolution: None,
             tpm: false,
             secure_boot: false,
+            shared_folder: None,
         }
     }
 

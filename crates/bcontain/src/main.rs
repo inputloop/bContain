@@ -112,6 +112,10 @@ enum Cmd {
         /// UEFI Secure Boot with Microsoft's keys (Linux hosts).
         #[arg(long)]
         secure_boot: Option<bool>,
+        /// Share a host folder with the guest (`''` stops sharing). The guest
+        /// opens \\10.0.2.4\qemu on Linux hosts, \\10.0.2.2\bcontain-NAME on Windows.
+        #[arg(long)]
+        share: Option<String>,
     },
     /// Grow a stopped VM's system disk (never shrinks), e.g. `resize win11 256G`.
     Resize { name: String, size: String },
@@ -472,8 +476,10 @@ fn real_main() -> Result<()> {
             resolution,
             tpm,
             secure_boot,
+            share,
         } => {
             let patch = settings::Patch {
+                shared_folder: share,
                 cpus,
                 memory,
                 ports,
