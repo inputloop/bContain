@@ -255,6 +255,9 @@ The window is a local web page shown in an Edge (or Chrome) app window, with
 no address bar or tabs. Double-clicking opens it. `bcontain ui --open` opens
 it from a terminal and keeps it running until Ctrl+C.
 
+It opens in dark mode. The sun button at the top right switches to light
+mode, and the moon button switches back; the app remembers the choice.
+
 It binds to `127.0.0.1` only. It refuses requests addressed to any other host
 name, which blocks DNS-rebinding attacks. State-changing requests need an
 `X-Bcontain` header, so other websites cannot control your VMs through your

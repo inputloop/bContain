@@ -71,6 +71,8 @@ ${esc(text)
   ];
   for (const [name, viewport, colorScheme] of shots) {
     const page = await browser.newPage({ viewport, colorScheme, deviceScaleFactor: 2 });
+    // The app is dark unless light was chosen with its header button.
+    await page.addInitScript((t) => localStorage.setItem("bcontain-theme", t), colorScheme);
     await page.goto(url);
     await page.waitForSelector(".check");
     await page.waitForTimeout(500);

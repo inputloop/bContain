@@ -6,20 +6,27 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>bContain</title>
+<meta name="theme-color" content="#161a1f">
+<script>
+  // Dark unless the person chose light; applied before the page draws, so
+  // there is no white flash. Storage can be unavailable: then dark it is.
+  try { if (localStorage.getItem("bcontain-theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%2376b900%22/%3E%3Ctext x=%2216%22 y=%2223%22 font-size=%2219%22 font-family=%22sans-serif%22 font-weight=%22800%22 text-anchor=%22middle%22 fill=%22%230b1400%22%3Eb%3C/text%3E%3C/svg%3E">
 <style>
 :root {
+  color-scheme: dark;
+  --bg: #0e1013; --panel: #161a1f; --ink: #e8ebef; --muted: #9aa3ae; --line: #262c34;
+  --accent: #86cc0a; --accent-ink: #0b1400; --ok: #49c27a; --bad: #ef6b6b; --warn: #e2a33a;
+  --chip: #1f252c; --code: #1b2026;
+}
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #5d6673; --line: #e2e5ea;
   --accent: #76b900; --accent-ink: #0b1400; --ok: #1f8a4c; --bad: #c43d3d; --warn: #a86b00;
   --chip: #eef1f4; --code: #f0f2f5;
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0e1013; --panel: #161a1f; --ink: #e8ebef; --muted: #9aa3ae; --line: #262c34;
-    --accent: #86cc0a; --accent-ink: #0b1400; --ok: #49c27a; --bad: #ef6b6b; --warn: #e2a33a;
-    --chip: #1f252c; --code: #1b2026;
-  }
-}
+.themeBtn { font-size: 16px; line-height: 1; padding: 6px 9px; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink);
@@ -144,6 +151,7 @@ button.big { padding: 9px 18px; }
   </div>
   <div class="spacer"></div>
   <span id="verdict" class="badge">checking…</span>
+  <button type="button" id="themeToggle" class="themeBtn"></button>
 </header>
 <main>
   <div class="stack">
@@ -248,6 +256,21 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const gib = (mib) => (mib / 1024).toFixed(1) + " G";
 const size = (mib) => mib >= 1024 ? (mib / 1024).toFixed(1) + " GiB" : mib + " MB";
+// Light/dark switch; the choice is kept per browser.
+function applyTheme(light) {
+  document.documentElement.dataset.theme = light ? "light" : "";
+  if (!light) delete document.documentElement.dataset.theme;
+  document.querySelector('meta[name="theme-color"]').content = light ? "#ffffff" : "#161a1f";
+  const b = $("#themeToggle");
+  b.textContent = light ? "☾" : "☀";
+  b.title = b.ariaLabel = light ? "Switch to dark mode" : "Switch to light mode";
+}
+applyTheme(document.documentElement.dataset.theme === "light");
+$("#themeToggle").addEventListener("click", () => {
+  const light = document.documentElement.dataset.theme !== "light";
+  applyTheme(light);
+  try { localStorage.setItem("bcontain-theme", light ? "light" : "dark"); } catch (e) {}
+});
 async function api(method, path, body) {
   const r = await fetch(path, { method, headers: { "X-Bcontain": "1", "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
