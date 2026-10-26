@@ -92,8 +92,10 @@ pub enum AccelMode {
     /// KVM / WHPX with QEMU's defaults (WHPX uses Hyper-V's own APIC when available).
     #[default]
     Auto,
-    /// WHPX with QEMU's userspace APIC (`kernel-irqchip=off`): for Windows
-    /// builds where the default hangs before the BIOS shows anything.
+    /// WHPX with QEMU's userspace APIC (`kernel-irqchip=off`) on classic PC
+    /// hardware (i440FX, IDE, e1000, UHCI: no MSI). For Windows builds where
+    /// the default hangs before the BIOS shows anything, and for small or old
+    /// guests.
     Compat,
     /// No hardware acceleration (QEMU TCG): slow, but independent of the hypervisor.
     Software,

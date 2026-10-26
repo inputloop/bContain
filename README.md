@@ -203,7 +203,8 @@ QEMU's window can show two placeholder messages:
 
 | The window says | What it means | Try |
 |---|---|---|
-| *Guest has not initialized the display (yet)* | Nothing has run, not even the BIOS. The virtual CPU is stuck at the very start. | Set the VM's **Acceleration** (dropdown in the Machines list) to **compatibility**, and/or give it **1 vCPU**. **software (slow)** always works, which tells us whether the hypervisor is the problem. |
+| *Guest has not initialized the display (yet)* | Nothing has run, not even the BIOS. The virtual CPU is stuck at the very start. | Set the VM's **Acceleration** (dropdown in the Machines list) to **compatibility (classic PC)**, and/or give it **1 vCPU**. **software (slow)** always works, which tells us whether the hypervisor is the problem. |
+| The guest boots, then freezes while reading its CD or disk | Disk interrupts are being lost (MSI on the SATA controller). | **compatibility (classic PC)**: it also swaps in the classic PC chipset with an IDE CD-ROM and disk on plain interrupt lines. |
 | *Display output is not active* | The guest turned its display off. | Fixed by making the basic display a standard VGA card; rebuild if you still see it. |
 
 If a VM stops with an error, the Machines list shows it in red under the

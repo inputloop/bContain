@@ -197,7 +197,7 @@ button.big { padding: 9px 18px; }
         <label id="accelField">Acceleration
           <select name="accel_mode" title="If a VM shows nothing or crashes, try another mode">
             <option value="auto">automatic</option>
-            <option value="compat">compatibility</option>
+            <option value="compat">compatibility (classic PC)</option>
             <option value="software">software (slow)</option>
           </select>
         </label>
@@ -270,7 +270,7 @@ async function loadVms() {
         ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
       <td><span class="kind">${esc(v.kind)}</span>
         ${v.kind === "vm" ? `<select class="accelSel" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Acceleration: if this VM shows nothing or crashes, try another mode">
-          ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility", software: "software (slow)"}[m]}</option>`).join("")}
+          ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility (classic PC)", software: "software (slow)"}[m]}</option>`).join("")}
         </select>` : ""}</td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
       <td class="src" title="${esc(v.source)}">${esc(v.source)}</td>

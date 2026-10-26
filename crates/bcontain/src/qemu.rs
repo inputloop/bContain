@@ -95,12 +95,19 @@ impl Qemu {
         let mut push = |items: &[&str]| a.extend(items.iter().map(|s| s.to_string()));
 
         push(&["-name", &spec.name]);
+        // Compatibility mode also means compatible hardware: the i440FX PC
+        // with IDE, e1000 and UHCI. Every device then interrupts on a plain
+        // IRQ line and is driven through port I/O: no MSI/MSI-X, little MMIO.
+        // That suits QEMU's userspace APIC on WHPX and the oldest, smallest
+        // guests (a Tiny Core boot stalled reading its CD over AHCI).
+        let pc_hw = spec.accel_mode == AccelMode::Compat;
+        let chipset = if pc_hw { "pc" } else { "q35" };
         let machine = if spec.hugepages {
-            "q35,memory-backend=ram0"
+            format!("{chipset},memory-backend=ram0")
         } else {
-            "q35"
+            chipset.to_string()
         };
-        push(&["-machine", machine]);
+        push(&["-machine", &machine]);
         let accel = if spec.accel_mode == AccelMode::Software {
             Accel::None
         } else {
@@ -158,7 +165,7 @@ impl Qemu {
                 drive.push_str(",snapshot=on");
             }
             push(&["-drive", &drive]);
-            let dev = if spec.legacy_devices {
+            let dev = if spec.legacy_devices || pc_hw {
                 format!("ide-hd,drive=disk{i}")
             } else {
                 format!("virtio-blk-pci,drive=disk{i}")
@@ -183,13 +190,17 @@ impl Qemu {
             netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{}-:{}", p.host, p.guest));
         }
         push(&["-netdev", &netdev]);
-        let nic = if spec.legacy_devices {
+        let nic = if pc_hw {
+            "e1000,netdev=net0"
+        } else if spec.legacy_devices {
             "e1000e,netdev=net0"
         } else {
             "virtio-net-pci,netdev=net0"
         };
         push(&["-device", nic]);
-        push(&["-device", "virtio-rng-pci"]);
+        if !pc_hw {
+            push(&["-device", "virtio-rng-pci"]);
+        }
 
         let gui_backend = if cfg!(windows) { "sdl" } else { "gtk" };
         match spec.display {
@@ -213,7 +224,11 @@ impl Qemu {
             }
         }
         if spec.display != Display::Headless {
-            push(&["-device", "qemu-xhci", "-device", "usb-tablet"]);
+            if pc_hw {
+                push(&["-usb", "-device", "usb-tablet"]); // PIIX3 UHCI
+            } else {
+                push(&["-device", "qemu-xhci", "-device", "usb-tablet"]);
+            }
         }
         if spec.no_reboot {
             push(&["-no-reboot"]);
