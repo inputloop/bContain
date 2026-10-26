@@ -126,19 +126,38 @@ browser.
    ```
    Without it, VMs still run, but with slow software emulation. The app's
    "This machine" panel shows whether it is on.
-2. Get `bContain.exe` (from the CI artifact, or build it yourself as shown
-   below) and double-click it.
+2. Build `bContain.exe` once (next section), then double-click it.
 
-To build it yourself, run `.\scripts\bundle-qemu-windows.ps1`. It needs Rust
-and 7-Zip. The script downloads the official QEMU Windows build, keeps only
-what an x86_64 host needs, and builds `dist\bContain.exe` with QEMU inside it.
+### Building `bContain.exe` on Windows
+
+Builds run locally. GitHub Actions is set to manual-only because the account
+has no Actions budget.
+
+1. Get this repository onto the Windows machine (`git clone`, or GitHub's
+   **Code → Download ZIP**).
+2. Double-click **`build-windows.cmd`**. It checks for:
+   - **Rust**, offering to install it with `winget`. When the Rust installer
+     offers to set up the Visual Studio C++ build tools, accept: Rust needs
+     them on Windows.
+   - **7-Zip**, offering to install it the same way. It unpacks the QEMU
+     installer without running it.
+
+   It then downloads the official QEMU Windows build, keeps only what an
+   x86_64 host needs, and compiles everything into **`dist\bContain.exe`**.
+   When it finishes, Explorer opens with the file selected.
+3. Copy `bContain.exe` wherever you like and double-click it.
+
+The first build takes a few minutes, and later builds are quicker. Because
+the exe is built on your own machine, Windows SmartScreen does not show its
+"downloaded from the internet" warning.
 
 ### Linux
 
 ```sh
 sudo apt install qemu-system-x86 qemu-utils ovmf      # Fedora: qemu-kvm qemu-img edk2-ovmf
 sudo usermod -aG kvm $USER                            # then log out and back in
-./scripts/package-linux.sh                            # or: cargo build --release
+curl https://sh.rustup.rs -sSf | sh                   # Rust, if you don't have it
+./scripts/package-linux.sh                            # builds dist/bcontain-linux-x86_64.tar.gz
 ```
 
 QEMU comes from your distribution, which is the reliable way to get KVM,
@@ -227,6 +246,7 @@ crates/bcontain/src/
   desktop.rs   app window, native file dialog, finding images on this PC
 crates/bcontain/build.rs   embeds QEMU into the exe for the single-file build
 crates/bvmm/   native-VMM seam: accelerator probing, future hypervisor
+build-windows.cmd   double-click to build dist\bContain.exe on Windows
 scripts/       Windows QEMU bundler, Linux packager, screenshot generator
 ```
 
@@ -255,7 +275,7 @@ What has been verified, and where:
     requests.
 - **Not yet verified on real hardware:**
   - On Windows: double-clicking, the Edge app window, the Windows "Open"
-    dialog, WHPX, and the bundling script and CI workflow.
+    dialog, WHPX, and `build-windows.cmd` with the bundling script it runs.
   - virgl on an NVIDIA GPU.
   - Registry pulls: the sandbox's registry traffic was rate-limited or
     blocked, though the auth handshake itself completed.

@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
 # SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
 name: ci
+# Manual only: the account has no Actions budget, so builds run locally
+# (build-windows.cmd on Windows, scripts/package-linux.sh on Linux).
+# Run it from the Actions tab if budget becomes available.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   linux:

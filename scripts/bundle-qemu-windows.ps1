@@ -3,7 +3,8 @@
 # Build bContain for Windows as ONE file you can double-click:
 #   dist\bContain.exe   (QEMU embedded inside; unpacked once on first run)
 #
-# Usage (PowerShell, from the repo root):
+# Easiest: double-click build-windows.cmd in the repo root, which checks the
+# prerequisites and runs this. Or from PowerShell in the repo root:
 #   .\scripts\bundle-qemu-windows.ps1 [-QemuInstaller path\to\qemu-w64-setup.exe]
 #
 # Without -QemuInstaller the latest build is downloaded from
@@ -62,7 +63,14 @@ Write-Host ("QEMU payload: {0:N0} MB" -f ((Get-Item $payload).Length / 1MB))
 
 $env:BCONTAIN_EMBED_QEMU = $payload
 Push-Location $root
-try { cargo build --release; if ($LASTEXITCODE -ne 0) { throw "cargo build failed" } }
+try {
+    cargo build --release
+    if ($LASTEXITCODE -ne 0) {
+        throw "cargo build failed. If the error mentions link.exe, install the C++ build tools: " +
+              "winget install Microsoft.VisualStudio.2022.BuildTools --override " +
+              "`"--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended`""
+    }
+}
 finally { Pop-Location; Remove-Item Env:\BCONTAIN_EMBED_QEMU }
 
 $out = Join-Path $root "dist\bContain.exe"
