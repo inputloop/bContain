@@ -322,8 +322,20 @@ $("#vms").addEventListener("click", async (e) => {
       $("#logCard").hidden = false; $("#logTitle").textContent = `Diagnose · ${n}`;
       $("#log").textContent = "Booting the VM several ways without a window: 2-3 minutes…";
       b.disabled = true;
-      try { $("#log").textContent = await api("POST", `/api/vms/${encodeURIComponent(n)}/diagnose`); }
-      catch (err) { $("#log").textContent = err.message; }
+      const url = `/api/vms/${encodeURIComponent(n)}/diagnose`;
+      try {
+        await api("POST", url);
+        const started = Date.now();
+        for (;;) {
+          await new Promise(r => setTimeout(r, 1500));
+          const j = await api("GET", url);
+          if (!j) continue;
+          const secs = Math.round((Date.now() - started) / 1000);
+          $("#log").textContent = j.lines.join("\n") +
+            (j.trying ? `\n  … trying: ${j.trying} (${secs} s so far)` : "");
+          if (j.done) break;
+        }
+      } catch (err) { $("#log").textContent += "\n" + err.message; }
       b.disabled = false; return;
     }
     if (act === "delete") { if (!confirm(`Delete ${n}? Disks bContain created for it are removed; your source image is kept.`)) return;

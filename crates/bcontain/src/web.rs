@@ -350,9 +350,12 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
             ))
         }
         (Method::Post, ["api", "vms", name, "diagnose"]) => {
-            let mut lines = Vec::new();
-            crate::diagnose::run(name, &mut |l| lines.push(l)).map_err(bad)?;
-            Ok(Reply::Text(lines.join("\n")))
+            store::load(name).map_err(|e| (404, format!("{e:#}")))?;
+            crate::diagnose::start_background(name);
+            Ok(Reply::Json(json!({ "ok": true })))
+        }
+        (Method::Get, ["api", "vms", name, "diagnose"]) => {
+            Ok(Reply::Json(json!(crate::diagnose::status(name))))
         }
         (Method::Post, ["api", "vms", name, "eject"]) => {
             let n = ops::eject(name).map_err(bad)?;

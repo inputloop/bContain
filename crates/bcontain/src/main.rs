@@ -507,7 +507,9 @@ fn real_main() -> Result<()> {
         }
         Cmd::Kernel { cmd } => kernel(cmd),
         Cmd::Gpu { cmd } => gpu_cmd(cmd.unwrap_or(GpuCmd::Status)),
-        Cmd::Diagnose { name } => diagnose::run(&name, &mut |l| println!("{l}")),
+        Cmd::Diagnose { name } => diagnose::run(&name, &mut |l| println!("{l}"), &mut |t| {
+            eprintln!("  (trying: {t}…)")
+        }),
         Cmd::HypervisorTest => {
             println!("Testing bContain's own hypervisor on this machine:");
             match bvmm::self_test(&mut |step| println!("  - {step}")) {

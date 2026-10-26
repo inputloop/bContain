@@ -158,7 +158,55 @@ fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
     ))
 }
 
-pub fn run(name: &str, report: &mut dyn FnMut(String)) -> Result<()> {
+/// `run`'s progress, for the app, which polls it: a diagnosis takes minutes.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Job {
+    pub lines: Vec<String>,
+    /// The variant being tried right now.
+    pub trying: Option<String>,
+    pub done: bool,
+}
+
+static JOBS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, Job>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn update(name: &str, f: impl FnOnce(&mut Job)) {
+    if let Ok(mut jobs) = JOBS.lock() {
+        f(jobs.entry(name.to_string()).or_default());
+    }
+}
+
+/// Start diagnosing `name` on a background thread (once at a time per VM).
+pub fn start_background(name: &str) {
+    if let Ok(mut jobs) = JOBS.lock() {
+        if jobs.get(name).is_some_and(|j| !j.done) {
+            return;
+        }
+        jobs.insert(name.to_string(), Job::default());
+    }
+    let name = name.to_string();
+    std::thread::spawn(move || {
+        let result = run(
+            &name,
+            &mut |l| update(&name, |j| j.lines.push(l)),
+            &mut |t| update(&name, |j| j.trying = Some(t.to_string())),
+        );
+        update(&name, |j| {
+            if let Err(e) = result {
+                j.lines.push(format!("error: {e:#}"));
+            }
+            j.trying = None;
+            j.done = true;
+        });
+    });
+}
+
+/// The latest progress of a background diagnosis, if one was started.
+pub fn status(name: &str) -> Option<Job> {
+    JOBS.lock().ok()?.get(name).cloned()
+}
+
+pub fn run(name: &str, report: &mut dyn FnMut(String), trying: &mut dyn FnMut(&str)) -> Result<()> {
     let rec = store::load(name)?;
     if rec.backend != "qemu" {
         bail!("diagnose works on QEMU VMs");
@@ -180,6 +228,7 @@ pub fn run(name: &str, report: &mut dyn FnMut(String)) -> Result<()> {
         all.len()
     ));
     for (label, spec) in &all {
+        trying(label);
         let outcome = probe(&q, spec, &work).unwrap_or_else(|e| Outcome::Exited(format!("{e:#}")));
         report(format!("  {label:<46} {outcome}"));
     }
