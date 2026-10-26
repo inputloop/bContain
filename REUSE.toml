@@ -22,6 +22,7 @@ path = [
   "docs/screenshots/dashboard-light.png",
   "docs/screenshots/dashboard-mobile.png",
   "docs/screenshots/machines-storage.png",
+  "docs/screenshots/vm-settings.png",
   "docs/screenshots/vm-storage.png",
 ]
 precedence = "override"

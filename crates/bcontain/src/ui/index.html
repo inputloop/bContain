@@ -420,6 +420,18 @@ async function showSettings(n) {
       ? " and sign in with your Windows user name and password. Saving asks for administrator approval once, to create the share."
       : " (Linux guests: <span class=mono>sudo mount -t cifs //10.0.2.4/qemu /mnt -o guest</span>)."}`}</p>`;
   }
+  if (!d.native && d.has_display) {
+    // Plugged-in devices, plus chosen ones that are unplugged right now.
+    const key = (u) => `${u.vendor}:${u.product}`;
+    const all = [...d.host_usb];
+    for (const u of d.usb) if (!all.some(h => key(h) === key(u))) all.push({ ...u, note: "Not plugged in now; the VM takes it when it is." });
+    const hex = (n) => n.toString(16).padStart(4, "0");
+    html += `<h3>USB devices</h3>${all.length ? all.map(u => `<label class="checkbox" style="align-items:flex-start">
+        <input type="checkbox" name="usbdev" value="${key(u)}" data-name="${esc(u.name)}" ${d.usb.some(x => key(x) === key(u)) ? "checked" : ""} ${dis}>
+        <span>${esc(u.name)} <small class="mono">${hex(u.vendor)}:${hex(u.product)}</small>${u.note ? `<br><small class="space">${esc(u.note)}</small>` : ""}</span></label>`).join("")
+      : `<p class="note">No USB devices found on this host.</p>`}
+    <p class="note">A ticked device belongs to the VM while it runs: the host can't use it meanwhile.</p>`;
+  }
   html += `<div class="row" style="margin-top:10px"><div><button class="primary" id="saveSettings" ${dis}>Save settings</button></div></div>`;
   if (d.disk) html += `<h3>Disk</h3>
     <p class="note">${esc(d.disk.path)} · ${esc(d.disk.format)} · ${d.disk.size_mib ? size(d.disk.size_mib) : "size unknown"}</p>
@@ -453,7 +465,9 @@ $("#settingsBody").addEventListener("click", (e) => {
       ports: f("ports").value.split(",").map(s => s.trim()).filter(Boolean),
       ...(f("resolution") ? { resolution: f("resolution").value, fullscreen: f("fullscreen").checked } : {}),
       ...(f("tpm") ? { tpm: f("tpm").checked, secure_boot: f("secure_boot").checked } : {}),
-      ...(f("shared_folder") && !f("shared_folder").disabled ? { shared_folder: f("shared_folder").value } : {}) }),
+      ...(f("shared_folder") && !f("shared_folder").disabled ? { shared_folder: f("shared_folder").value } : {}),
+      ...($("#settingsBody").querySelector("[name=usbdev]") ? { usb: [...$("#settingsBody").querySelectorAll("[name=usbdev]:checked")].map(c => {
+          const [vendor, product] = c.value.split(":").map(Number); return { vendor, product, name: c.dataset.name }; }) } : {}) }),
     "Saved. The changes apply the next time the VM starts.");
   else if (b.id === "pickShare") {
     b.disabled = true;

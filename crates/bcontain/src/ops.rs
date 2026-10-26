@@ -270,6 +270,7 @@ pub fn create(
         tpm: false,
         secure_boot: false,
         shared_folder: None,
+        usb: Vec::new(),
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);

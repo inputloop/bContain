@@ -466,6 +466,25 @@ impl Qemu {
             ]);
             push(&["-device", "hda-duplex,audiodev=snd0"]);
         }
+        if !spec.usb.is_empty() {
+            // A controller of their own: xHCI, or EHCI on classic PC hardware,
+            // whose devices stay off MSI.
+            push(&[
+                "-device",
+                if pc_hw {
+                    "usb-ehci,id=usbpt"
+                } else {
+                    "qemu-xhci,id=usbpt"
+                },
+            ]);
+            for d in &spec.usb {
+                let dev = format!(
+                    "usb-host,bus=usbpt.0,vendorid=0x{:04x},productid=0x{:04x}",
+                    d.vendor, d.product
+                );
+                push(&["-device", &dev]);
+            }
+        }
         if spec.no_reboot {
             push(&["-no-reboot"]);
         }
@@ -907,6 +926,7 @@ mod tests {
             tpm: false,
             secure_boot: false,
             shared_folder: None,
+            usb: Vec::new(),
         }
     }
 

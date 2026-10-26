@@ -46,6 +46,8 @@ pub struct Patch {
     pub secure_boot: Option<bool>,
     /// A host folder to share with the guest; "" stops sharing.
     pub shared_folder: Option<String>,
+    /// The host USB devices the VM takes over (the whole list).
+    pub usb: Option<Vec<crate::usb::UsbDevice>>,
 }
 
 /// Why `spec` cannot share a folder here, if it cannot.
@@ -190,6 +192,14 @@ pub fn apply(name: &str, host: &Host, patch: &Patch) -> Result<VmRecord> {
             }
             spec.shared_folder = dir;
         }
+    }
+    if let Some(usb) = &patch.usb {
+        if !usb.is_empty() && (spec.kernel.is_some() || native) {
+            bail!("only VMs with a screen can take USB devices");
+        }
+        let mut usb = usb.clone();
+        usb.dedup_by(|a, b| a.vendor == b.vendor && a.product == b.product);
+        spec.usb = usb;
     }
     if let Some(sb) = patch.secure_boot.filter(|&sb| sb != spec.secure_boot) {
         if sb {
@@ -423,6 +433,9 @@ pub struct Details {
     /// The path the guest opens it at.
     pub share_path: String,
     pub share_blocker: Option<&'static str>,
+    /// Devices the VM takes over, and the ones plugged in now.
+    pub usb: Vec<crate::usb::UsbDevice>,
+    pub host_usb: Vec<crate::usb::HostUsb>,
     pub secure_boot_blocker: Option<&'static str>,
     pub host_threads: usize,
     pub host_memory_mib: u64,
@@ -477,6 +490,12 @@ pub fn details(name: &str, host: &Host) -> Result<Details> {
             .unwrap_or_default(),
         share_path: share_path(name),
         share_blocker: share_blocker(s),
+        usb: s.usb.clone(),
+        host_usb: if s.kernel.is_none() {
+            crate::usb::list()
+        } else {
+            Vec::new()
+        },
         secure_boot_blocker: secure_boot_blocker(s),
         host_threads: host.threads,
         host_memory_mib: host.memory_mib,

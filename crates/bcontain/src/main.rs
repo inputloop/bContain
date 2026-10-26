@@ -18,6 +18,7 @@ mod qemu;
 mod registry;
 mod settings;
 mod store;
+mod usb;
 mod web;
 mod windows;
 
@@ -116,7 +117,13 @@ enum Cmd {
         /// opens \\10.0.2.4\qemu on Linux hosts, \\10.0.2.2\bcontain-NAME on Windows.
         #[arg(long)]
         share: Option<String>,
+        /// A host USB device for the VM, VENDOR:PRODUCT in hex as `bcontain usb`
+        /// lists them (repeatable; replaces the list; `--usb ''` clears).
+        #[arg(long)]
+        usb: Option<Vec<String>>,
     },
+    /// List the host's USB devices a VM can take over.
+    Usb,
     /// Grow a stopped VM's system disk (never shrinks), e.g. `resize win11 256G`.
     Resize { name: String, size: String },
     /// Snapshots of a stopped VM's disks: list, take, restore or delete.
@@ -477,8 +484,37 @@ fn real_main() -> Result<()> {
             tpm,
             secure_boot,
             share,
+            usb,
         } => {
+            let host_usb = usb::list();
+            let usb = usb
+                .map(|list| {
+                    list.iter()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(|s| {
+                            let (v, p) = s.split_once(':').with_context(|| {
+                                format!("`{s}`: expected VENDOR:PRODUCT, e.g. 045e:0b12")
+                            })?;
+                            let (vendor, product) = (
+                                u16::from_str_radix(v.trim(), 16)?,
+                                u16::from_str_radix(p.trim(), 16)?,
+                            );
+                            let name = host_usb
+                                .iter()
+                                .find(|h| h.vendor == vendor && h.product == product)
+                                .map(|h| h.name.clone())
+                                .unwrap_or_default();
+                            Ok(usb::UsbDevice {
+                                vendor,
+                                product,
+                                name,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()
+                })
+                .transpose()?;
             let patch = settings::Patch {
+                usb,
                 shared_folder: share,
                 cpus,
                 memory,
@@ -504,6 +540,19 @@ fn real_main() -> Result<()> {
                     .map(|(w, h)| format!(", {w}x{h}"))
                     .unwrap_or_default()
             );
+            Ok(())
+        }
+        Cmd::Usb => {
+            let list = usb::list();
+            if list.is_empty() {
+                println!("no USB devices found");
+            }
+            for d in list {
+                println!("{:04x}:{:04x}  {}", d.vendor, d.product, d.name);
+                if let Some(n) = d.note {
+                    println!("           {n}");
+                }
+            }
             Ok(())
         }
         Cmd::Resize { name, size } => {

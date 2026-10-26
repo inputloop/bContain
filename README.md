@@ -87,6 +87,60 @@ From the command line: `bcontain create win11 Win11.iso --disk-size 256G
 |---|---|
 | ![Disk size and folder](docs/screenshots/vm-storage.png) | ![Machines list](docs/screenshots/machines-storage.png) |
 
+## Changing a VM later: Settings
+
+Each VM in the Machines list has a **Settings** button. Changes apply to a
+stopped VM and take effect the next time it starts.
+
+![Settings panel](docs/screenshots/vm-settings.png)
+
+- **Hardware:** vCPUs, memory and port forwards, checked against this host
+  as when creating.
+- **Display:** open the VM's window full screen (Ctrl+Alt+F leaves it), and
+  a preferred screen resolution. The virtual monitor offers that resolution
+  to the guest as its preferred mode, as a real monitor's EDID would.
+- **Sound:** every VM with a screen has an Intel HD Audio card, which every
+  OS has a driver for. It plays through DirectSound on Windows, or
+  PipeWire, PulseAudio or ALSA on Linux, whichever is running.
+- **Security (Linux hosts):** a TPM 2.0 (from `swtpm`) and UEFI Secure Boot
+  with Microsoft's keys. Windows 11 VMs created on a Linux host that has both
+  get them automatically, so Setup's requirements are met for real.
+  Windows hosts can't offer these, because Windows' hypervisor platform has
+  no SMM mode for Secure Boot, so Windows 11 VMs there get the answer disc
+  instead.
+- **Shared folder:** a host folder the VM opens over the network.
+  - On Linux hosts, QEMU serves it with Samba (install `samba`); the guest
+    opens `\\10.0.2.4\qemu`.
+  - On Windows hosts, bContain shares it with Windows' own file sharing,
+    for your user only, after one administrator prompt. The guest opens
+    `\\10.0.2.2\bcontain-NAME` and signs in with your Windows user name
+    and password.
+- **USB devices:** tick a plugged-in device (a game controller, a USB drive)
+  and the VM takes it over while it runs. Devices are matched by vendor and
+  product ID, so they can be plugged in before or after the VM starts.
+  - On Linux, QEMU needs access to the device: run with `sudo`, or add a udev
+    rule.
+  - On Windows, the device first needs the WinUSB driver, which you can
+    install with [Zadig](https://zadig.akeo.ie). The panel says when a device
+    is missing it. While a device is on WinUSB, Windows itself can't use it.
+- **Disk:** grow the system disk (never shrink). Afterwards, extend the
+  partition inside the guest: on Windows, Disk Management → Extend Volume.
+- **Snapshots:** save the VM's disks and its UEFI boot entries as they are
+  now, then restore them later. Restoring loses whatever changed since.
+  Snapshots need qcow2 disks, which is what bContain creates.
+
+From the command line:
+
+```
+bcontain set win11 --cpus 8 --memory 16G -p 3389:3389 --resolution 1920x1080
+bcontain set win11 --share D:\Shared --usb 045e:0b12 --tpm true --secure-boot true
+bcontain usb                               # the host's USB devices
+bcontain resize win11 256G
+bcontain snapshot win11 take "before update"
+bcontain snapshot win11                    # list
+bcontain snapshot win11 restore "before update"
+```
+
 ## Windows 10 and 11
 
 Pick a Windows ISO from Microsoft (for example `Win11_24H2_English_x64.iso`)
@@ -359,6 +413,7 @@ Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|comp
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`, `--windows`,
 `-p HOST:GUEST[/udp]`, `-e KEY=VALUE`, `--kernel`.
 `create` also takes `--disk-size SIZE` and `--storage FOLDER`.
+`set NAME` changes a stopped VM (see [Settings](#changing-a-vm-later-settings)); `resize`, `snapshot` and `usb` are listed there too.
 
 ## How containers run
 

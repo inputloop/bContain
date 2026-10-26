@@ -127,6 +127,9 @@ pub struct VmSpec {
     /// share on Linux hosts, a Windows share on Windows hosts.
     #[serde(default)]
     pub shared_folder: Option<PathBuf>,
+    /// Host USB devices this VM takes over while it runs.
+    #[serde(default)]
+    pub usb: Vec<crate::usb::UsbDevice>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
