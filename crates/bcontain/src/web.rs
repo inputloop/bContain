@@ -22,6 +22,16 @@ use crate::store;
 const INDEX: &str = include_str!("ui/index.html");
 use crate::KERNEL_IMAGE;
 
+fn looks_like_gaming(path: &std::path::Path) -> bool {
+    let n = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    ["bazzite", "steamos", "holoiso", "chimeraos", "nobara"]
+        .iter()
+        .any(|k| n.contains(k))
+}
+
 fn looks_like_windows(path: &std::path::Path) -> bool {
     let n = path
         .file_name()
@@ -40,6 +50,19 @@ fn looks_like_windows(path: &std::path::Path) -> bool {
     .iter()
     .any(|k| n.contains(k))
         || n.starts_with("win")
+}
+
+/// GPU passthrough readiness for the "This machine" panel.
+fn gpu_status() -> Value {
+    let sys = crate::gpu::Sysfs::default();
+    let candidate = sys.passthrough_candidate();
+    let checks = crate::gpu::readiness(&sys, candidate.as_ref());
+    json!({
+        "ready": checks.iter().all(|c| c.ok),
+        "linux": cfg!(target_os = "linux"),
+        "gpu": candidate.map(|g| g.name),
+        "checks": checks,
+    })
 }
 
 /// What the GUI shows about a chosen image before creating a machine from it.
@@ -64,6 +87,8 @@ fn inspect(image: &str) -> Value {
                     "name": name,
                     // Stock Windows media has no virtio drivers; suggest SATA + e1000e.
                     "windows": looks_like_windows(path),
+                    // Gaming systems: suggest the gaming preset and GPU passthrough.
+                    "gaming": looks_like_gaming(path),
                 })
             }
             None => {
@@ -228,6 +253,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                 "data_dir": store::data_dir().display().to_string(),
                 "bundled_qemu": crate::qemu::has_embedded_qemu(),
                 "native": native,
+                "gpu": gpu_status(),
                 "os": std::env::consts::OS,
             })))
         }
@@ -281,6 +307,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .collect::<Result<_>>()
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
+                gpu: body.gpu,
                 engine: body.engine.filter(|e| !e.is_empty()),
                 accel_mode: body.accel_mode,
                 disk_mib: body
@@ -352,6 +379,8 @@ struct CreateBody {
     engine: Option<String>,
     #[serde(default)]
     accel_mode: crate::engine::AccelMode,
+    #[serde(default)]
+    gpu: bool,
 }
 
 #[derive(Deserialize)]

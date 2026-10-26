@@ -53,6 +53,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .running .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .kernelBtn, .hvBtn { margin-top: 6px; }
+.check .v .fix { display: block; margin-top: 2px; }
 .accelSel { display: block; margin-top: 4px; font-size: 11px; padding: 2px 4px; }
 .hvLog { margin-top: 6px; max-height: 160px; font-size: 11px; }
 .crash { color: var(--bad); font-size: 12px; max-width: 260px; overflow-wrap: anywhere; margin-top: 2px; }
@@ -188,6 +189,7 @@ button.big { padding: 9px 18px; }
             <option value="">automatic</option>
             <option value="rtx3080ti">rtx3080ti: desktop</option><option value="light">light</option>
             <option value="max">max</option><option value="container">container</option>
+            <option value="gaming">gaming (GPU passthrough)</option>
           </select>
         </label>
         <label>vCPUs <input name="cpus" type="number" min="1" max="64" placeholder="from preset"></label>
@@ -202,6 +204,7 @@ button.big { padding: 9px 18px; }
           </select>
         </label>
         <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows guest (SATA disk and e1000e network, no virtio drivers needed)</label>
+        <label class="checkbox wide" id="gpuField" hidden><input type="checkbox" name="gpu"> Give the GPU to this VM for gaming (Linux host; the picture appears on the GPU's own output)</label>
         <label class="checkbox wide" id="nativeField" hidden><input type="checkbox" name="native"> Run on bContain's own hypervisor (experimental: 1 vCPU, no network yet)</label>
         <label class="checkbox wide"><input type="checkbox" name="start" checked> Start it right away</label>
         <div class="wide"><button class="primary big" type="submit" id="createBtn">Create machine</button></div>
@@ -244,6 +247,13 @@ async function loadHost() {
       ? "ready (container kernel installed)"
       : `optional: a small Linux kernel (about 13 MB, once) lets you run container images like alpine or nginx. Not needed for ISOs or disk images.
          <br><button type="button" class="kernelBtn">Install</button>`}</span></div>`);
+  if (h.gpu && h.gpu.linux) {
+    const bad = h.gpu.checks.filter(c => !c.ok);
+    rows.push(`<div class="check"><span class="i ${h.gpu.ready ? "ok" : "opt"}">${h.gpu.ready ? "✔" : "•"}</span>
+      <span class="k">GPU passthrough</span><span class="v">${h.gpu.ready
+        ? esc(h.gpu.gpu) + " can be given to a gaming VM"
+        : "not ready yet:" + bad.map(c => `<span class="fix">${esc(c.item)}: ${esc(c.fix || c.detail)}</span>`).join("")}</span></div>`);
+  }
   rows.push(`<div class="check"><span class="i opt">•</span>
     <span class="k">bvmm</span><span class="v">bContain's own hypervisor (experimental, containers):
       ${h.native.usable ? esc(h.native.accel) + " available" : esc(h.native.accel) + " not available"}
@@ -328,6 +338,12 @@ function showInfo(i) {
   if (!name.dataset.touched) name.value = i.name || "";
   $("#diskField").hidden = !i.iso;
   $("#nativeField").hidden = !(i.container && HOST && HOST.native && HOST.native.usable);
+  $("#gpuField").hidden = !(HOST && HOST.gpu && HOST.gpu.linux) || !!i.container;
+  if (i.gaming && !$("#gpuField").hidden) {
+    createForm.elements.gpu.checked = !!HOST.gpu.ready;
+    if (!createForm.elements.preset.value) createForm.elements.preset.value = "gaming";
+    createForm.elements.disk_size.value = "256G";
+  }
   const legacy = createForm.elements.legacy;
   if (!legacy.dataset.touched) legacy.checked = !!i.windows;
   updateBanner();
@@ -402,6 +418,7 @@ createForm.addEventListener("submit", async (e) => {
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
       legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on",
       accel_mode: f.get("accel_mode") || "auto",
+      gpu: !$("#gpuField").hidden && f.get("gpu") === "on",
       engine: !$("#nativeField").hidden && f.get("native") === "on" ? "native" : "" });
     msg.textContent = [...r.log, r.started ? `${r.name} is running.` : `Created ${r.name}.`].join("\n");
     createForm.reset(); delete createForm.elements.name.dataset.touched; delete createForm.elements.legacy.dataset.touched;

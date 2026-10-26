@@ -85,9 +85,12 @@ impl Qemu {
             "OVMF_CODE.secboot.fd",
             "OVMF.fd",
         ];
-        self.share_dirs()
+        // Prefer by name over by folder: a split code + variables pair beats
+        // a combined OVMF.fd, which cannot keep per-VM boot entries.
+        let dirs = self.share_dirs();
+        NAMES
             .iter()
-            .flat_map(|d| NAMES.iter().map(move |n| d.join(n)))
+            .flat_map(|n| dirs.iter().map(move |d| d.join(n)))
             .find(|p| p.is_file())
     }
 
@@ -153,6 +156,33 @@ impl Qemu {
             )?;
             let drive = format!("if=pflash,format=raw,readonly=on,file={}", qemu_path(&code));
             push(&["-drive", &drive]);
+            // Per-VM variable store, so an installed OS keeps its boot entry.
+            if let Some(vars) = uefi_vars_for(&code, &spec.name)? {
+                let drive = format!("if=pflash,format=raw,file={}", qemu_path(&vars));
+                push(&["-drive", &drive]);
+            }
+        }
+
+        if let Some(gpu) = &spec.gpu {
+            if accel != Accel::Kvm {
+                bail!("GPU passthrough needs KVM on a Linux host");
+            }
+            // Behind its own PCIe root port, as on real hardware: the NVIDIA
+            // driver reads link details from the port.
+            push(&["-device", "pcie-root-port,id=gpuport,chassis=1,slot=1"]);
+            for (i, f) in gpu.functions.iter().enumerate() {
+                let mut dev = format!("vfio-pci,host={f},bus=gpuport,addr=00.{i}");
+                if i == 0 {
+                    dev.push_str(&format!(
+                        ",multifunction=on,x-pci-sub-vendor-id={},x-pci-sub-device-id={}",
+                        gpu.subsystem_vendor, gpu.subsystem_device
+                    ));
+                    if let Some(rom) = &gpu.rom {
+                        dev.push_str(&format!(",romfile={}", qemu_path(rom)));
+                    }
+                }
+                push(&["-device", &dev]);
+            }
         }
 
         let mut has_cdrom = false;
@@ -198,7 +228,11 @@ impl Qemu {
 
         let mut netdev = "user,id=net0".to_string();
         for p in &spec.ports {
-            netdev.push_str(&format!(",hostfwd=tcp:127.0.0.1:{}-:{}", p.host, p.guest));
+            let proto = if p.udp { "udp" } else { "tcp" };
+            netdev.push_str(&format!(
+                ",hostfwd={proto}:127.0.0.1:{}-:{}",
+                p.host, p.guest
+            ));
         }
         push(&["-netdev", &netdev]);
         let nic = if pc_hw {
@@ -466,6 +500,31 @@ pub fn has_embedded_qemu() -> bool {
     embedded::PRESENT
 }
 
+/// The writable UEFI variable store for VM `name`, copied on first use from
+/// the template that matches `code`. `None` for combined images (OVMF.fd).
+fn uefi_vars_for(code: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let file = code
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let template = match file {
+        "OVMF_CODE_4M.fd" => "OVMF_VARS_4M.fd",
+        "OVMF_CODE.fd" | "OVMF_CODE.secboot.fd" => "OVMF_VARS.fd",
+        "edk2-x86_64-code.fd" => "edk2-i386-vars.fd",
+        _ => return Ok(None),
+    };
+    let template = code.with_file_name(template);
+    if !template.is_file() {
+        return Ok(None);
+    }
+    let vars = crate::store::vm_dir(name).join("efivars.fd");
+    if !vars.is_file() {
+        fs::create_dir_all(crate::store::vm_dir(name))?;
+        fs::copy(&template, &vars).with_context(|| format!("copying {}", template.display()))?;
+    }
+    Ok(Some(vars))
+}
+
 /// QEMU option values use `,` as a separator; a literal comma is written `,,`.
 fn qemu_path(p: &Path) -> String {
     p.to_string_lossy().replace(',', ",,")
@@ -522,14 +581,23 @@ mod tests {
             kernel: None,
             display: Display::Virgl,
             firmware: Firmware::Bios,
-            ports: vec![PortForward {
-                host: 8080,
-                guest: 80,
-            }],
+            ports: vec![
+                PortForward {
+                    host: 8080,
+                    guest: 80,
+                    udp: false,
+                },
+                PortForward {
+                    host: 47998,
+                    guest: 47998,
+                    udp: true,
+                },
+            ],
             hugepages: false,
             no_reboot: false,
             legacy_devices: false,
             accel_mode: AccelMode::Auto,
+            gpu: None,
         }
     }
 
@@ -546,8 +614,32 @@ mod tests {
         assert!(a.contains("file=/vm/a,,b.qcow2,format=qcow2"));
         assert!(a.contains("-device virtio-blk-pci,drive=disk0"));
         assert!(a.contains("-boot once=d"));
-        assert!(a.contains("hostfwd=tcp:127.0.0.1:8080-:80"));
+        assert!(a.contains("hostfwd=tcp:127.0.0.1:8080-:80,hostfwd=udp:127.0.0.1:47998-:47998"));
         assert!(a.contains("virtio-vga-gl"));
+    }
+
+    #[test]
+    fn gpu_passthrough() {
+        let q = Qemu {
+            binary: "/usr/bin/qemu-system-x86_64".into(),
+            accel: Accel::Kvm,
+        };
+        let mut s = spec();
+        s.gpu = Some(crate::engine::GpuPassthrough {
+            functions: vec!["0000:01:00.0".into(), "0000:01:00.1".into()],
+            subsystem_vendor: "0x1043".into(),
+            subsystem_device: "0x16c3".into(),
+            rom: Some("/vm/vbios.rom".into()),
+        });
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("-device pcie-root-port,id=gpuport,chassis=1,slot=1"));
+        assert!(a.contains("vfio-pci,host=0000:01:00.0,bus=gpuport,addr=00.0,multifunction=on,x-pci-sub-vendor-id=0x1043,x-pci-sub-device-id=0x16c3,romfile=/vm/vbios.rom"));
+        assert!(a.contains("vfio-pci,host=0000:01:00.1,bus=gpuport,addr=00.1"));
+        let w = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Whp,
+        };
+        assert!(w.args(&s, false).unwrap_err().to_string().contains("KVM"));
     }
 
     #[test]

@@ -39,6 +39,8 @@ pub struct CreateOptions {
     /// "qemu" (default) or "native" (bContain's own hypervisor, containers only).
     pub engine: Option<String>,
     pub accel_mode: crate::engine::AccelMode,
+    /// Hand the host's free GPU to this VM (Linux + KVM).
+    pub gpu: bool,
 }
 
 /// What `image` resolved to.
@@ -104,6 +106,7 @@ pub fn create(
     let preset = match &opts.preset {
         Some(p) => Preset::parse(p)?,
         None if is_container => Preset::Container,
+        None if opts.gpu => Preset::Gaming,
         None => Preset::Rtx3080ti,
     };
     let sizing = preset.sizing(host);
@@ -125,7 +128,23 @@ pub fn create(
         no_reboot: is_container,
         legacy_devices: opts.legacy_devices,
         accel_mode: opts.accel_mode,
+        gpu: None,
     };
+    if opts.gpu {
+        spec.gpu = Some(gpu_for_new_vm(&dir, log)?);
+        spec.firmware = Firmware::Uefi;
+        spec.accel_mode = crate::engine::AccelMode::Auto;
+        for (port, udp) in SUNSHINE_PORTS {
+            if !spec.ports.iter().any(|p| p.host == port && p.udp == udp) {
+                spec.ports.push(PortForward {
+                    host: port,
+                    guest: port,
+                    udp,
+                });
+            }
+        }
+        log("  forwarding Sunshine's ports: connect Moonlight to 127.0.0.1".into());
+    }
     if spec.cpus as usize > host.threads {
         bail!(
             "{} vCPUs requested but the host has {} threads",
@@ -287,9 +306,77 @@ pub fn start(name: &str) -> Result<engine::Running> {
     if store::running(name, hv.as_ref()).is_some() {
         bail!("`{name}` is already running");
     }
-    let r = hv.launch(&rec.spec, &store::log_path(name))?;
+    gpu_acquire(&rec.spec)?;
+    let r = match hv.launch(&rec.spec, &store::log_path(name)) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = gpu_release(&rec.spec);
+            return Err(e);
+        }
+    };
     store::set_running(name, &r)?;
     Ok(r)
+}
+
+/// Take the VM's GPU away from the host (bind it to vfio-pci).
+pub fn gpu_acquire(spec: &VmSpec) -> Result<()> {
+    if let Some(g) = &spec.gpu {
+        crate::gpu::bind_vfio(&crate::gpu::Sysfs::default(), &g.functions)
+            .context("handing the GPU to the VM")?;
+    }
+    Ok(())
+}
+
+/// Give the VM's GPU back to the host's drivers.
+pub fn gpu_release(spec: &VmSpec) -> Result<()> {
+    if let Some(g) = &spec.gpu {
+        crate::gpu::unbind_vfio(&crate::gpu::Sysfs::default(), &g.functions)
+            .context("giving the GPU back to the host")?;
+    }
+    Ok(())
+}
+
+/// Check the host can pass its GPU through and describe it for a new VM.
+fn gpu_for_new_vm(
+    dir: &Path,
+    log: &mut dyn FnMut(String),
+) -> Result<crate::engine::GpuPassthrough> {
+    let sys = crate::gpu::Sysfs::default();
+    let candidate = sys.passthrough_candidate();
+    let blockers: Vec<String> = crate::gpu::readiness(&sys, candidate.as_ref())
+        .into_iter()
+        .filter(|c| !c.ok)
+        .map(|c| format!("  - {}: {}", c.item, c.fix.unwrap_or(c.detail)))
+        .collect();
+    if !blockers.is_empty() {
+        bail!(
+            "this host cannot pass a GPU through yet:\n{}",
+            blockers.join("\n")
+        );
+    }
+    let g = candidate.expect("readiness passed, so there is a GPU");
+    log(format!("  passing through {} ({})", g.name, g.address));
+    // Laptop GPUs often keep their video BIOS in system firmware; save it if
+    // the card exposes it (needs root), otherwise run without one.
+    let rom = dir.join("vbios.rom");
+    let rom = match crate::gpu::dump_vbios(&sys, &g.address, &rom) {
+        Ok(n) => {
+            log(format!("  saved the GPU's video BIOS ({} KiB)", n / 1024));
+            Some(rom)
+        }
+        Err(e) => {
+            log(format!(
+                "  no video BIOS image ({e:#}); continuing without one"
+            ));
+            None
+        }
+    };
+    Ok(crate::engine::GpuPassthrough {
+        functions: crate::gpu::passthrough_functions(&g),
+        subsystem_vendor: g.subsystem_vendor,
+        subsystem_device: g.subsystem_device,
+        rom,
+    })
 }
 
 pub fn stop(name: &str, force: bool) -> Result<()> {
@@ -300,6 +387,20 @@ pub fn stop(name: &str, force: bool) -> Result<()> {
     hv.stop(&r, force)?;
     if force {
         store::clear_running(name);
+    }
+    if rec.spec.gpu.is_some() {
+        // The GPU can only go back once QEMU has let go of it.
+        for _ in 0..600 {
+            if !hv.is_alive(&r) {
+                store::clear_running(name);
+                return gpu_release(&rec.spec);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        bail!(
+            "`{name}` is still shutting down; once it has stopped, give the GPU back with \
+             `sudo bcontain gpu release {name}`"
+        );
     }
     Ok(())
 }
@@ -471,8 +572,15 @@ pub fn parse_mib(s: &str) -> Result<u64> {
     Ok((n * mult) as u64)
 }
 
+/// `HOST:GUEST`, `PORT`, with an optional `/udp` (or `/tcp`) suffix.
 pub fn parse_port(s: &str) -> Result<PortForward> {
-    let (h, g) = s.split_once(':').unwrap_or((s, s));
+    let (ports, udp) = match s.trim().rsplit_once('/') {
+        Some((p, "udp")) => (p, true),
+        Some((p, "tcp")) => (p, false),
+        Some(_) => bail!("bad port mapping `{s}` (protocol must be tcp or udp)"),
+        None => (s.trim(), false),
+    };
+    let (h, g) = ports.split_once(':').unwrap_or((ports, ports));
     Ok(PortForward {
         host: h
             .parse()
@@ -480,8 +588,24 @@ pub fn parse_port(s: &str) -> Result<PortForward> {
         guest: g
             .parse()
             .with_context(|| format!("bad port mapping `{s}`"))?,
+        udp,
     })
 }
+
+/// Sunshine (game streaming, built into Bazzite) listens on these. With
+/// them forwarded, Moonlight on the host connects to 127.0.0.1 and shows the
+/// VM's GPU output, and carries keyboard, mouse and controller input back.
+pub const SUNSHINE_PORTS: [(u16, bool); 9] = [
+    (47984, false),
+    (47989, false),
+    (47990, false),
+    (48010, false),
+    (47998, true),
+    (47999, true),
+    (48000, true),
+    (48002, true),
+    (48010, true),
+];
 
 #[cfg(test)]
 mod tests {
@@ -513,6 +637,10 @@ mod tests {
         let p = parse_port("8080:80").unwrap();
         assert_eq!((p.host, p.guest), (8080, 80));
         assert_eq!(parse_port("22").unwrap().guest, 22);
+        let u = parse_port("47998/udp").unwrap();
+        assert!(u.udp && u.host == 47998 && u.guest == 47998);
+        assert!(!parse_port("80:8080/tcp").unwrap().udp);
+        assert!(parse_port("80/sctp").is_err());
     }
 
     #[test]

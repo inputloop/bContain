@@ -43,9 +43,29 @@ pub fn data_dir() -> PathBuf {
     if let Some(p) = std::env::var_os("BCONTAIN_HOME") {
         return PathBuf::from(p);
     }
+    // GPU passthrough needs root. Under `sudo`, keep using the invoking
+    // user's VMs instead of a separate set under /root.
+    if let Some(home) = sudo_user_home() {
+        return home.join(".local/share/bcontain");
+    }
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("bcontain")
+}
+
+fn sudo_user_home() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let user = std::env::var("SUDO_USER")
+        .ok()
+        .filter(|u| !u.is_empty() && u != "root")?;
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    passwd
+        .lines()
+        .map(|l| l.split(':').collect::<Vec<_>>())
+        .find(|f| f.len() > 5 && f[0] == user)
+        .map(|f| PathBuf::from(f[5]))
 }
 
 pub fn vm_dir(name: &str) -> PathBuf {

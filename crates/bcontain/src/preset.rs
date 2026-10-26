@@ -24,6 +24,9 @@ pub enum Preset {
     Max,
     /// Container micro-VM: 4 vCPU, 2 GiB, headless serial console.
     Container,
+    /// Gaming VM with a passed-through GPU: all but 4 host threads (max 16),
+    /// 16 GiB, UEFI. The picture comes from the GPU itself.
+    Gaming,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -35,11 +38,12 @@ pub struct Sizing {
 }
 
 impl Preset {
-    pub const ALL: [Preset; 4] = [
+    pub const ALL: [Preset; 5] = [
         Preset::Rtx3080ti,
         Preset::Light,
         Preset::Max,
         Preset::Container,
+        Preset::Gaming,
     ];
 
     pub fn name(self) -> &'static str {
@@ -48,6 +52,7 @@ impl Preset {
             Preset::Light => "light",
             Preset::Max => "max",
             Preset::Container => "container",
+            Preset::Gaming => "gaming",
         }
     }
 
@@ -75,6 +80,11 @@ impl Preset {
             Preset::Light => (4, 4 * 1024, Display::Basic),
             Preset::Max => (threads.saturating_sub(2), spare_mib, default_3d()),
             Preset::Container => (4, 2 * 1024, Display::Headless),
+            Preset::Gaming => (
+                threads.saturating_sub(4).clamp(2, 16),
+                spare_mib.min(16 * 1024),
+                Display::Basic,
+            ),
         };
         let memory_mib = memory_mib.min(spare_mib);
         Sizing {
@@ -125,6 +135,9 @@ mod tests {
         assert_eq!(s.cpus, 10);
         assert_eq!(s.memory_mib, 16 * 1024);
         assert!(!s.hugepages);
+
+        let g = Preset::Gaming.sizing(&laptop());
+        assert_eq!((g.cpus, g.memory_mib), (16, 16 * 1024));
 
         let m = Preset::Max.sizing(&laptop());
         assert_eq!(m.cpus, 18);

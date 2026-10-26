@@ -16,6 +16,10 @@ Linux**. It is tuned for an **RTX 3080 Ti / Core i9 / 32 GB laptop, or better**.
 - **Tuned presets** sized from the detected host. Guests get virtio-gpu with
   virgl 3D on the NVIDIA GPU, and hugepages when they are reserved.
 - **One binary** with both a CLI and a local web dashboard.
+- **Gaming VMs with the real GPU (Linux host):** bContain gives the whole RTX
+  3080 Ti to a Bazzite (SteamOS-style) VM through VFIO, and gives it back
+  afterwards. Picture over HDMI or streamed with Sunshine/Moonlight. See
+  [docs/GPU-PASSTHROUGH.md](docs/GPU-PASSTHROUGH.md).
 - **Its own hypervisor (experimental):** `bvmm` boots container images
   directly on WHP or KVM without QEMU (`--engine native`). It is new and has
   not yet run on real hardware; see
@@ -233,12 +237,13 @@ line.
 | `run IMAGE [opts] [-- CMD…]` | One-shot run attached to the terminal. Disk writes are discarded unless you pass `--persist` |
 | `pull REF` · `images` | Download and list registry images |
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
+| `gpu [status \| release NAME \| dump-vbios FILE \| set-rom NAME FILE]` | GPU passthrough: check this host, give a GPU back, save or attach a video BIOS |
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
 
-Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--preset`, `--cpus`, `--memory 16G`,
+Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--gpu`, `--preset`, `--cpus`, `--memory 16G`,
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`,
-`-p HOST:GUEST`, `-e KEY=VALUE`, `--kernel`.
+`-p HOST:GUEST[/udp]`, `-e KEY=VALUE`, `--kernel`.
 
 ## How containers run
 

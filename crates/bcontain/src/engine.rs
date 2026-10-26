@@ -56,6 +56,9 @@ pub enum Firmware {
 pub struct PortForward {
     pub host: u16,
     pub guest: u16,
+    /// UDP instead of TCP.
+    #[serde(default)]
+    pub udp: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +85,22 @@ pub struct VmSpec {
     /// How to use the hardware hypervisor; see [`AccelMode`].
     #[serde(default)]
     pub accel_mode: AccelMode,
+    /// A host GPU handed to the VM with VFIO (Linux + KVM only).
+    #[serde(default)]
+    pub gpu: Option<GpuPassthrough>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GpuPassthrough {
+    /// PCI functions, GPU first (e.g. 0000:01:00.0 and its audio 0000:01:00.1).
+    pub functions: Vec<String>,
+    /// The host card's subsystem IDs, so the guest driver sees the laptop's
+    /// own GPU rather than an anonymous one.
+    pub subsystem_vendor: String,
+    pub subsystem_device: String,
+    /// Video BIOS image for GPUs whose ROM is not on the card (laptops).
+    #[serde(default)]
+    pub rom: Option<PathBuf>,
 }
 
 /// WHPX in particular behaves differently across Windows builds and guests,

@@ -5,6 +5,7 @@
 
 mod desktop;
 mod engine;
+mod gpu;
 mod host;
 mod image;
 mod native;
@@ -18,7 +19,7 @@ mod web;
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::engine::{Display, Firmware, Hypervisor};
@@ -110,6 +111,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: KernelCmd,
     },
+    /// GPU passthrough: check this host, or hand the GPU over and back.
+    Gpu {
+        #[command(subcommand)]
+        cmd: Option<GpuCmd>,
+    },
     /// Check that bContain's own hypervisor works on this machine, step by step.
     HypervisorTest,
     /// Internal: run a VM on bContain's own hypervisor (used by `start`).
@@ -123,6 +129,18 @@ enum Cmd {
         #[arg(long)]
         open: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum GpuCmd {
+    /// Show the GPUs and whether one can be passed to a VM (the default).
+    Status,
+    /// Give a VM's GPU back to the host (if the VM stopped on its own).
+    Release { name: String },
+    /// Save the GPU's video BIOS to a file (root).
+    DumpVbios { out: PathBuf },
+    /// Use a video BIOS file for a VM's GPU (laptops whose ROM is not on the card).
+    SetRom { name: String, file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -174,6 +192,9 @@ struct Tune {
     /// acceleration (slow, but rules the hypervisor out).
     #[arg(long, value_enum, default_value_t = AccelArg::Auto)]
     accel: AccelArg,
+    /// Give the host's free GPU to the VM (Linux + KVM; see docs/GPU-PASSTHROUGH.md).
+    #[arg(long)]
+    gpu: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum, Default)]
@@ -226,6 +247,7 @@ impl Tune {
             env: self.env,
             kernel: self.kernel,
             engine: self.engine,
+            gpu: self.gpu,
             accel_mode: match self.accel {
                 AccelArg::Auto => engine::AccelMode::Auto,
                 AccelArg::Compat => engine::AccelMode::Compat,
@@ -301,8 +323,10 @@ fn real_main() -> Result<()> {
             if attach {
                 let rec = store::load(&name)?;
                 let hv = engine::backend(&rec.backend)?;
-                let code = hv.run_foreground(&rec.spec)?;
-                std::process::exit(code);
+                ops::gpu_acquire(&rec.spec)?;
+                let code = hv.run_foreground(&rec.spec);
+                ops::gpu_release(&rec.spec)?;
+                std::process::exit(code?);
             }
             let r = ops::start(&name)?;
             println!(
@@ -422,7 +446,11 @@ fn real_main() -> Result<()> {
                     rec.spec.cpus,
                     rec.spec.memory_mib
                 ));
+                ops::gpu_acquire(&rec.spec)?;
                 let code = q.run_foreground(&rec.spec);
+                if let Err(e) = ops::gpu_release(&rec.spec) {
+                    eprintln!("warning: {e:#}");
+                }
                 cleanup();
                 std::process::exit(code?);
             }
@@ -452,6 +480,7 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Cmd::Kernel { cmd } => kernel(cmd),
+        Cmd::Gpu { cmd } => gpu_cmd(cmd.unwrap_or(GpuCmd::Status)),
         Cmd::HypervisorTest => {
             println!("Testing bContain's own hypervisor on this machine:");
             match bvmm::self_test(&mut |step| println!("  - {step}")) {
@@ -543,6 +572,96 @@ fn doctor(json: bool) -> Result<()> {
         }
     );
     Ok(())
+}
+
+fn gpu_cmd(cmd: GpuCmd) -> Result<()> {
+    let sys = gpu::Sysfs::default();
+    match cmd {
+        GpuCmd::Status => {
+            let gpus = sys.gpus();
+            println!("GPUs:");
+            if gpus.is_empty() {
+                println!("  (none found in /sys/bus/pci)");
+            }
+            for g in &gpus {
+                println!(
+                    "  {}  {}  driver {}{}{}",
+                    g.address,
+                    g.name,
+                    g.driver.as_deref().unwrap_or("none"),
+                    if g.boot_vga {
+                        "  [drives the screen]"
+                    } else {
+                        ""
+                    },
+                    g.iommu_group
+                        .map(|n| format!("  IOMMU group {n}"))
+                        .unwrap_or_default()
+                );
+            }
+            let candidate = sys.passthrough_candidate();
+            println!("\nPassthrough readiness:");
+            let checks = gpu::readiness(&sys, candidate.as_ref());
+            for c in &checks {
+                println!(
+                    "  {} {:<14} {}",
+                    if c.ok { "✔" } else { "✘" },
+                    c.item,
+                    c.detail
+                );
+                if let Some(f) = &c.fix {
+                    println!("                   fix: {f}");
+                }
+            }
+            if checks.iter().all(|c| c.ok) {
+                let g = candidate.expect("ready implies a GPU");
+                println!(
+                    "\nReady: `sudo bcontain create bazzite bazzite-nvidia.iso --gpu` gives {} to the VM.",
+                    g.name
+                );
+            }
+            Ok(())
+        }
+        GpuCmd::Release { name } => {
+            let rec = store::load(&name)?;
+            ops::gpu_release(&rec.spec)?;
+            println!("gave the GPU back to the host");
+            Ok(())
+        }
+        GpuCmd::SetRom { name, file } => {
+            let mut rec = store::load(&name)?;
+            let gpu = rec
+                .spec
+                .gpu
+                .as_mut()
+                .context("that VM has no GPU passthrough")?;
+            let data =
+                std::fs::read(&file).with_context(|| format!("reading {}", file.display()))?;
+            if data.len() < 512 || data[0] != 0x55 || data[1] != 0xaa {
+                bail!(
+                    "{} is not a video BIOS image (no 55 AA signature)",
+                    file.display()
+                );
+            }
+            let dest = store::vm_dir(&name).join("vbios.rom");
+            std::fs::write(&dest, &data)?;
+            gpu.rom = Some(dest);
+            store::save(&rec)?;
+            println!("`{name}` will use that video BIOS from its next start");
+            Ok(())
+        }
+        GpuCmd::DumpVbios { out } => {
+            let g = sys.passthrough_candidate().context("no GPU to read")?;
+            let n = gpu::dump_vbios(&sys, &g.address, &out)?;
+            println!(
+                "saved {} KiB from {} to {}",
+                n / 1024,
+                g.address,
+                out.display()
+            );
+            Ok(())
+        }
+    }
 }
 
 fn kernel(cmd: KernelCmd) -> Result<()> {
