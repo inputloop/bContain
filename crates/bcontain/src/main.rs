@@ -7,6 +7,7 @@ mod desktop;
 mod engine;
 mod host;
 mod image;
+mod native;
 mod oci;
 mod ops;
 mod preset;
@@ -17,7 +18,7 @@ mod web;
 
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::engine::{Display, Firmware, Hypervisor};
@@ -109,6 +110,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: KernelCmd,
     },
+    /// Check that bContain's own hypervisor works on this machine, step by step.
+    HypervisorTest,
+    /// Internal: run a VM on bContain's own hypervisor (used by `start`).
+    #[command(name = "__native-run", hide = true)]
+    NativeRun { name: String },
     /// Serve the local web dashboard.
     Ui {
         #[arg(long, default_value_t = 7878)]
@@ -160,6 +166,9 @@ struct Tune {
     /// Guest kernel for containers (bzImage).
     #[arg(long)]
     kernel: Option<PathBuf>,
+    /// qemu (default), or native: bContain's own hypervisor (containers only, experimental).
+    #[arg(long, value_parser = ["qemu", "native"])]
+    engine: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -203,6 +212,7 @@ impl Tune {
             command: Vec::new(),
             env: self.env,
             kernel: self.kernel,
+            engine: self.engine,
         })
     }
 }
@@ -322,6 +332,13 @@ fn real_main() -> Result<()> {
         Cmd::Info { name } => {
             let rec = store::load(&name)?;
             println!("{}", serde_json::to_string_pretty(&rec)?);
+            if rec.backend == "native" {
+                println!(
+                    "\nengine: bContain's own hypervisor ({})",
+                    bvmm::probe().accel
+                );
+                return Ok(());
+            }
             let q = qemu::Qemu::locate()?;
             println!(
                 "\n{} {}",
@@ -355,6 +372,24 @@ fn real_main() -> Result<()> {
             opts.ephemeral = !persist;
             opts.command = command;
             let rec = ops::create(&opts, &host, false, &mut say)?;
+            let cleanup = || {
+                let _ = std::fs::remove_dir_all(store::vm_dir(&rec.spec.name));
+            };
+            if rec.backend == "native" {
+                if dry_run {
+                    cleanup();
+                    bail!("--dry-run shows QEMU command lines; the native engine has none");
+                }
+                say(format!(
+                    "booting on bContain's own hypervisor ({}): {} vCPU, {} MiB",
+                    bvmm::probe().accel,
+                    rec.spec.cpus,
+                    rec.spec.memory_mib
+                ));
+                let code = native::run_attached(&rec.spec, true);
+                cleanup();
+                std::process::exit(code?);
+            }
             let q = qemu::Qemu::locate()?;
             if dry_run {
                 println!(
@@ -370,10 +405,10 @@ fn real_main() -> Result<()> {
                     rec.spec.memory_mib
                 ));
                 let code = q.run_foreground(&rec.spec);
-                let _ = std::fs::remove_dir_all(store::vm_dir(&rec.spec.name));
+                cleanup();
                 std::process::exit(code?);
             }
-            let _ = std::fs::remove_dir_all(store::vm_dir(&rec.spec.name));
+            cleanup();
             Ok(())
         }
         Cmd::Pull { image } => {
@@ -399,6 +434,21 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Cmd::Kernel { cmd } => kernel(cmd),
+        Cmd::HypervisorTest => {
+            println!("Testing bContain's own hypervisor on this machine:");
+            match bvmm::self_test(&mut |step| println!("  - {step}")) {
+                Ok(()) => {
+                    println!("PASS: bContain's hypervisor works here. Try: bcontain run --engine native alpine:3.20 -- uname -a");
+                    Ok(())
+                }
+                Err(e) => bail!("FAIL: {e}"),
+            }
+        }
+        Cmd::NativeRun { name } => {
+            let rec = store::load(&name)?;
+            let code = native::run_attached(&rec.spec, false)?;
+            std::process::exit(code);
+        }
         Cmd::Ui { port, open } => web::serve(port, open),
     }
 }
@@ -446,6 +496,19 @@ fn doctor(json: bool) -> Result<()> {
             "  • Containers  optional kernel not installed (only for container images, not ISOs or disks): `bcontain kernel fetch` or Install in the app"
         ),
     }
+    let p = bvmm::probe();
+    println!(
+        "  {} bvmm        bContain's own hypervisor (experimental, containers): {}",
+        if p.usable { "•" } else { "✘" },
+        if p.usable {
+            format!(
+                "{} available; check it with `bcontain hypervisor-test`",
+                p.accel
+            )
+        } else {
+            format!("{} not available", p.accel)
+        }
+    );
     if host.hugepages_free_mib > 0 {
         println!("  ✔ Hugepages   {} MiB free", host.hugepages_free_mib);
     } else if cfg!(target_os = "linux") {

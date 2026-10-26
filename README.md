@@ -16,9 +16,10 @@ Linux**. It is tuned for an **RTX 3080 Ti / Core i9 / 32 GB laptop, or better**.
 - **Tuned presets** sized from the detected host. Guests get virtio-gpu with
   virgl 3D on the NVIDIA GPU, and hugepages when they are reserved.
 - **One binary** with both a CLI and a local web dashboard.
-- **Ready for its own hypervisor:** every engine call goes through a
-  `Hypervisor` trait, and `crates/bvmm` is where the native VMM is being built
-  (see [docs/NATIVE-VMM.md](docs/NATIVE-VMM.md)).
+- **Its own hypervisor (experimental):** `bvmm` boots container images
+  directly on WHP or KVM without QEMU (`--engine native`). It is new and has
+  not yet run on real hardware; see
+  [docs/NATIVE-VMM.md](docs/NATIVE-VMM.md) and run `bcontain hypervisor-test`.
 
 ## Windows: one file, double-click
 
@@ -210,9 +211,10 @@ folder next to the binary takes priority, as on Windows.
 | `run IMAGE [opts] [-- CMD…]` | One-shot run attached to the terminal. Disk writes are discarded unless you pass `--persist` |
 | `pull REF` · `images` | Download and list registry images |
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
+| `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
 
-Options shared by `create` and `run`: `--preset`, `--cpus`, `--memory 16G`,
+Options shared by `create` and `run`: `--engine qemu|native`, `--preset`, `--cpus`, `--memory 16G`,
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`,
 `-p HOST:GUEST`, `-e KEY=VALUE`, `--kernel`.
 
@@ -252,7 +254,9 @@ crates/bcontain/src/
   web.rs, ui/  the app window (local dashboard) and its API
   desktop.rs   app window, native file dialog, finding images on this PC
 crates/bcontain/build.rs   embeds QEMU into the exe for the single-file build
-crates/bvmm/   native-VMM seam: accelerator probing, future hypervisor
+crates/bvmm/   bContain's own hypervisor: boot loader, MP table, UART, CMOS,
+               I/O APIC, KVM and WHP backends, hypervisor-test
+  native.rs    (in bcontain) runs VMs on bvmm behind the same Hypervisor trait
 build-windows.cmd   double-click to build dist\bContain.exe on Windows
 scripts/       Windows QEMU bundler, Linux packager, screenshot generator
 ```
@@ -262,6 +266,7 @@ scripts/       Windows QEMU bundler, Linux packager, screenshot generator
 ```sh
 cargo test --workspace                       # unit tests
 cargo build --target x86_64-pc-windows-gnu   # cross-check the Windows build from Linux
+./scripts/check-whp-layout.sh                # WHP FFI vs Microsoft's headers (needs MinGW)
 node scripts/screenshots.js target/debug/bcontain   # regenerate docs/screenshots (needs `bcontain ui` running)
 ```
 

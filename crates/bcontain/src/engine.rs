@@ -106,10 +106,7 @@ pub trait Hypervisor {
 pub fn backend(name: &str) -> Result<Box<dyn Hypervisor>> {
     match name {
         "qemu" => Ok(Box::new(crate::qemu::Qemu::locate()?)),
-        "native" => {
-            bvmm::NativeVmm::new()?;
-            unreachable!("NativeVmm::new succeeded but no native backend is wired up")
-        }
+        "native" => Ok(Box::new(crate::native::Native)),
         other => anyhow::bail!("unknown backend `{other}` (expected `qemu` or `native`)"),
     }
 }

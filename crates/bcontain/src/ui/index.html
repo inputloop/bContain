@@ -52,7 +52,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .state { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .running .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
-.kernelBtn { margin-top: 6px; }
+.kernelBtn, .hvBtn { margin-top: 6px; }
+.hvLog { margin-top: 6px; max-height: 160px; font-size: 11px; }
 .crash { color: var(--bad); font-size: 12px; max-width: 260px; overflow-wrap: anywhere; margin-top: 2px; }
 .kind { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); }
 .src { color: var(--muted); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -192,6 +193,7 @@ button.big { padding: 9px 18px; }
         <label id="diskField" hidden>New disk size <input name="disk_size" value="64G"></label>
         <label>Ports <input name="ports" placeholder="host:guest, e.g. 8080:80"></label>
         <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows guest (SATA disk and e1000e network, no virtio drivers needed)</label>
+        <label class="checkbox wide" id="nativeField" hidden><input type="checkbox" name="native"> Run on bContain's own hypervisor (experimental: 1 vCPU, no network yet)</label>
         <label class="checkbox wide"><input type="checkbox" name="start" checked> Start it right away</label>
         <div class="wide"><button class="primary big" type="submit" id="createBtn">Create machine</button></div>
       </form>
@@ -233,7 +235,13 @@ async function loadHost() {
       ? "ready (container kernel installed)"
       : `optional: a small Linux kernel (about 13 MB, once) lets you run container images like alpine or nginx. Not needed for ISOs or disk images.
          <br><button type="button" class="kernelBtn">Install</button>`}</span></div>`);
+  rows.push(`<div class="check"><span class="i opt">•</span>
+    <span class="k">bvmm</span><span class="v">bContain's own hypervisor (experimental, containers):
+      ${h.native.usable ? esc(h.native.accel) + " available" : esc(h.native.accel) + " not available"}
+      ${h.native.usable ? `<br><button type="button" class="hvBtn">Test it</button><span class="hvOut"></span>` : ""}</span></div>`);
   $("#checks").innerHTML = rows.join("");
+  const hb = document.querySelector(".hvBtn");
+  if (hb) hb.onclick = () => testHypervisor(hb);
   const kb = document.querySelector(".kernelBtn");
   if (kb) kb.onclick = () => installKernel(kb);
   $("#presets").innerHTML = h.presets.map(p => `<tr><td>${esc(p.name)}</td>
@@ -293,12 +301,13 @@ function showInfo(i) {
   CHOSEN = i.ok ? i : null;
   const el = $("#imageInfo");
   el.className = "info" + (i.ok || !i.message ? "" : " err");
-  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; updateBanner(); return; }
+  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#nativeField").hidden = true; updateBanner(); return; }
   el.innerHTML = `<span class="tag">✔ ${esc(i.kind)}</span>` + (i.size_mib ? ` · ${size(i.size_mib)}` : "") +
     (i.remote ? " · downloaded when you create it" : "");
   const name = createForm.elements.name;
   if (!name.dataset.touched) name.value = i.name || "";
   $("#diskField").hidden = !i.iso;
+  $("#nativeField").hidden = !(i.container && HOST && HOST.native && HOST.native.usable);
   const legacy = createForm.elements.legacy;
   if (!legacy.dataset.touched) legacy.checked = !!i.windows;
   updateBanner();
@@ -315,6 +324,16 @@ function updateBanner() {
     b.innerHTML = 'Container images need a small Linux kernel (one-time, about 13 MB). <button type="button" id="getKernel">Install it</button>';
     $("#getKernel").onclick = (e) => installKernel(e.target);
   } else b.hidden = true;
+}
+async function testHypervisor(btn) {
+  const out = document.querySelector(".hvOut");
+  btn.disabled = true; btn.textContent = "Testing…"; out.textContent = "";
+  try {
+    const r = await api("POST", "/api/hypervisor-test");
+    out.innerHTML = `<pre class="hvLog">${esc([...r.steps, r.ok ? "PASS" : "FAIL: " + r.error].join("\n"))}</pre>`;
+    btn.textContent = r.ok ? "Passed ✔" : "Test again";
+  } catch (err) { out.textContent = err.message; btn.textContent = "Test again"; }
+  btn.disabled = false;
 }
 async function installKernel(btn) {
   btn.disabled = true; btn.textContent = "Downloading…";
@@ -360,7 +379,8 @@ createForm.addEventListener("submit", async (e) => {
       name: f.get("name"), image, preset: f.get("preset"), memory: f.get("memory"),
       disk_size: $("#diskField").hidden ? "" : f.get("disk_size"),
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
-      legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on" });
+      legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on",
+      engine: !$("#nativeField").hidden && f.get("native") === "on" ? "native" : "" });
     msg.textContent = [...r.log, r.started ? `${r.name} is running.` : `Created ${r.name}.`].join("\n");
     createForm.reset(); delete createForm.elements.name.dataset.touched; delete createForm.elements.legacy.dataset.touched;
     setImage(""); loadVms();

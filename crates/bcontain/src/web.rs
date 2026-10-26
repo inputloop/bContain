@@ -212,6 +212,8 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                 .map(|p| json!({ "name": p.name(), "sizing": p.sizing(host) }))
                 .collect();
             let qemu = crate::qemu::Qemu::locate().ok();
+            let probe = bvmm::probe();
+            let native = json!({ "accel": probe.accel.to_string(), "usable": probe.usable });
             Ok(Reply::Json(json!({
                 "host": host,
                 "checks": host.checks(),
@@ -225,6 +227,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                 "kernel": crate::oci::find_kernel(None).ok().map(|p| p.display().to_string()),
                 "data_dir": store::data_dir().display().to_string(),
                 "bundled_qemu": crate::qemu::has_embedded_qemu(),
+                "native": native,
                 "os": std::env::consts::OS,
             })))
         }
@@ -238,6 +241,15 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
         (Method::Post, ["api", "inspect"]) => {
             let body: InspectBody = read_json(req)?;
             Ok(Reply::Json(inspect(body.image.trim())))
+        }
+        (Method::Post, ["api", "hypervisor-test"]) => {
+            let mut steps = Vec::new();
+            let result = bvmm::self_test(&mut |s| steps.push(s.to_string()));
+            Ok(Reply::Json(json!({
+                "ok": result.is_ok(),
+                "steps": steps,
+                "error": result.err().map(|e| e.to_string()),
+            })))
         }
         (Method::Post, ["api", "kernel", "fetch"]) => {
             let mut lines = Vec::new();
@@ -269,6 +281,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .collect::<Result<_>>()
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
+                engine: body.engine.filter(|e| !e.is_empty()),
                 disk_mib: body
                     .disk_size
                     .as_deref()
@@ -328,6 +341,8 @@ struct CreateBody {
     disk_size: Option<String>,
     #[serde(default)]
     start: bool,
+    #[serde(default)]
+    engine: Option<String>,
 }
 
 #[derive(Deserialize)]

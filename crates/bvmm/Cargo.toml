@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
 [package]
 name = "bvmm"
-description = "bContain native VMM: the seam for bContain's own hypervisor (KVM on Linux, WHP on Windows)"
+description = "bContain native VMM: bContain's own hypervisor (KVM on Linux, WHP on Windows)"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kvm-ioctls = "0.25"
+kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }

@@ -590,8 +590,11 @@ fi
 rc=$?
 echo "[bcontain] container exited with code $rc"
 sync
+# Reset to exit: QEMU runs with -no-reboot and bContain's own hypervisor
+# treats the keyboard-controller reset as "done".
+reboot -f 2>/dev/null
+echo b > /proc/sysrq-trigger 2>/dev/null
 poweroff -f 2>/dev/null
-echo o > /proc/sysrq-trigger 2>/dev/null
 exit $rc
 "#;
     s

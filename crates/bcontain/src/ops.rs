@@ -36,6 +36,8 @@ pub struct CreateOptions {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub kernel: Option<PathBuf>,
+    /// "qemu" (default) or "native" (bContain's own hypervisor, containers only).
+    pub engine: Option<String>,
 }
 
 /// What `image` resolved to.
@@ -106,6 +108,8 @@ pub fn create(
     let sizing = preset.sizing(host);
     let dir = store::vm_dir(&opts.name);
     fs::create_dir_all(&dir)?;
+    // Remove the half-made folder (disk, initramfs) if anything below fails.
+    let mut cleanup = DirGuard(Some(dir.clone()));
 
     let mut spec = VmSpec {
         name: opts.name.clone(),
@@ -220,17 +224,57 @@ pub fn create(
         }
     }
 
+    let engine = opts.engine.clone().unwrap_or_else(|| "qemu".into());
+    match engine.as_str() {
+        "qemu" => {}
+        "native" => {
+            if spec.kernel.is_none() {
+                bail!(
+                    "bContain's own hypervisor runs container images only for now; \
+                     use the qemu engine for disk images and ISOs"
+                );
+            }
+            if spec.cpus > 1 {
+                log("  bContain's own hypervisor runs 1 vCPU for now".into());
+                spec.cpus = 1;
+            }
+            if spec.memory_mib > crate::native::MAX_MEMORY_MIB {
+                log(format!(
+                    "  memory capped at {} MiB on bContain's own hypervisor",
+                    crate::native::MAX_MEMORY_MIB
+                ));
+                spec.memory_mib = crate::native::MAX_MEMORY_MIB;
+            }
+            if !spec.ports.is_empty() {
+                log("  port forwarding is ignored: bContain's own hypervisor has no network card yet".into());
+                spec.ports.clear();
+            }
+        }
+        other => bail!("unknown engine `{other}` (expected `qemu` or `native`)"),
+    }
+
     let rec = VmRecord {
         spec,
         preset: preset.name().into(),
-        backend: "qemu".into(),
+        backend: engine,
         created: store::now(),
         source: opts.image.clone(),
     };
     if persist {
         store::save(&rec)?;
     }
+    cleanup.0 = None;
     Ok(rec)
+}
+
+struct DirGuard(Option<PathBuf>);
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        if let Some(d) = self.0.take() {
+            let _ = fs::remove_dir_all(d);
+        }
+    }
 }
 
 pub fn start(name: &str) -> Result<engine::Running> {
