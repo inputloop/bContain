@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use bvmm::Accel;
 
-use crate::engine::{Display, Firmware, Hypervisor, Running, VmSpec};
+use crate::engine::{AccelMode, Display, Firmware, Hypervisor, Running, VmSpec};
 
 const EXE: &str = if cfg!(windows) {
     "qemu-system-x86_64.exe"
@@ -101,11 +101,19 @@ impl Qemu {
             "q35"
         };
         push(&["-machine", machine]);
-        match self.accel {
-            // Leave kernel-irqchip to QEMU: it uses Hyper-V's own APIC when
-            // Windows offers it. Forcing it off moves interrupts into QEMU's
-            // userspace path, which aborts the VM on some guests (seen with
-            // Tiny Core).
+        let accel = if spec.accel_mode == AccelMode::Software {
+            Accel::None
+        } else {
+            self.accel
+        };
+        match accel {
+            // Auto leaves kernel-irqchip to QEMU, which uses Hyper-V's own APIC
+            // when Windows offers it. Its userspace APIC (Compat) aborts some
+            // guests (Tiny Core), while the in-kernel one hangs some Windows
+            // builds before the BIOS runs. Hence the per-VM choice.
+            Accel::Whp if spec.accel_mode == AccelMode::Compat => {
+                push(&["-accel", "whpx,kernel-irqchip=off", "-cpu", "max"])
+            }
             Accel::Whp => push(&["-accel", "whpx", "-cpu", "max"]),
             Accel::Kvm => push(&["-accel", "kvm", "-cpu", "host"]),
             Accel::None => push(&["-accel", "tcg,thread=multi", "-cpu", "max"]),
@@ -495,6 +503,7 @@ mod tests {
             hugepages: false,
             no_reboot: false,
             legacy_devices: false,
+            accel_mode: AccelMode::Auto,
         }
     }
 
@@ -527,6 +536,19 @@ mod tests {
         let a = q.args(&s, true).unwrap().join(" ");
         assert!(a.contains("-accel whpx -cpu max"));
         assert!(!a.contains("kernel-irqchip"));
+        let mut c = spec();
+        c.accel_mode = AccelMode::Compat;
+        assert!(q
+            .args(&c, false)
+            .unwrap()
+            .join(" ")
+            .contains("-accel whpx,kernel-irqchip=off"));
+        c.accel_mode = AccelMode::Software;
+        assert!(q
+            .args(&c, false)
+            .unwrap()
+            .join(" ")
+            .contains("-accel tcg,thread=multi"));
         assert!(a.contains("ide-hd,drive=disk0"));
         let mut b = spec();
         b.display = Display::Basic;

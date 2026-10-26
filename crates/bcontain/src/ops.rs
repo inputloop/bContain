@@ -38,6 +38,7 @@ pub struct CreateOptions {
     pub kernel: Option<PathBuf>,
     /// "qemu" (default) or "native" (bContain's own hypervisor, containers only).
     pub engine: Option<String>,
+    pub accel_mode: crate::engine::AccelMode,
 }
 
 /// What `image` resolved to.
@@ -123,6 +124,7 @@ pub fn create(
         hugepages: sizing.hugepages && opts.memory_mib.is_none_or(|m| m <= host.hugepages_free_mib),
         no_reboot: is_container,
         legacy_devices: opts.legacy_devices,
+        accel_mode: opts.accel_mode,
     };
     if spec.cpus as usize > host.threads {
         bail!(
@@ -329,6 +331,7 @@ pub struct VmView {
     /// For a stopped VM whose backend log ends in an error: that error, so
     /// the app can say why it stopped instead of it just vanishing.
     pub last_error: Option<String>,
+    pub accel_mode: crate::engine::AccelMode,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -342,6 +345,7 @@ pub fn views() -> Result<Vec<VmView>> {
             (r, state)
         })
         .map(|(r, state)| VmView {
+            accel_mode: r.spec.accel_mode,
             last_error: (state == store::State::Stopped)
                 .then(|| last_error(&store::log_path(&r.spec.name)))
                 .flatten(),
@@ -360,6 +364,17 @@ pub fn views() -> Result<Vec<VmView>> {
             ports: r.spec.ports,
         })
         .collect())
+}
+
+/// Change how a stopped VM uses the hardware hypervisor.
+pub fn set_accel_mode(name: &str, mode: crate::engine::AccelMode) -> Result<()> {
+    let mut rec = store::load(name)?;
+    let hv = engine::backend(&rec.backend)?;
+    if store::running(name, hv.as_ref()).is_some() {
+        bail!("stop `{name}` before changing its acceleration");
+    }
+    rec.spec.accel_mode = mode;
+    store::save(&rec)
 }
 
 /// The error a crashed backend left at the end of its log, if any.

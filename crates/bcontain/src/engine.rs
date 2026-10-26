@@ -79,6 +79,24 @@ pub struct VmSpec {
     /// without virtio drivers (stock Windows installers).
     #[serde(default)]
     pub legacy_devices: bool,
+    /// How to use the hardware hypervisor; see [`AccelMode`].
+    #[serde(default)]
+    pub accel_mode: AccelMode,
+}
+
+/// WHPX in particular behaves differently across Windows builds and guests,
+/// so the hardware-acceleration mode is a per-VM choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AccelMode {
+    /// KVM / WHPX with QEMU's defaults (WHPX uses Hyper-V's own APIC when available).
+    #[default]
+    Auto,
+    /// WHPX with QEMU's userspace APIC (`kernel-irqchip=off`): for Windows
+    /// builds where the default hangs before the BIOS shows anything.
+    Compat,
+    /// No hardware acceleration (QEMU TCG): slow, but independent of the hypervisor.
+    Software,
 }
 
 /// A running VM as seen by its backend.

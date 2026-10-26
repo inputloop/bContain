@@ -169,6 +169,19 @@ struct Tune {
     /// qemu (default), or native: bContain's own hypervisor (containers only, experimental).
     #[arg(long, value_parser = ["qemu", "native"])]
     engine: Option<String>,
+    /// auto (default); compat: WHPX with kernel-irqchip=off, for Windows builds
+    /// where VMs hang before the BIOS shows anything; software: no hardware
+    /// acceleration (slow, but rules the hypervisor out).
+    #[arg(long, value_enum, default_value_t = AccelArg::Auto)]
+    accel: AccelArg,
+}
+
+#[derive(Clone, Copy, ValueEnum, Default)]
+enum AccelArg {
+    #[default]
+    Auto,
+    Compat,
+    Software,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -213,6 +226,11 @@ impl Tune {
             env: self.env,
             kernel: self.kernel,
             engine: self.engine,
+            accel_mode: match self.accel {
+                AccelArg::Auto => engine::AccelMode::Auto,
+                AccelArg::Compat => engine::AccelMode::Compat,
+                AccelArg::Software => engine::AccelMode::Software,
+            },
         })
     }
 }

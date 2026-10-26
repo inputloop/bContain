@@ -282,6 +282,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
                 engine: body.engine.filter(|e| !e.is_empty()),
+                accel_mode: body.accel_mode,
                 disk_mib: body
                     .disk_size
                     .as_deref()
@@ -303,6 +304,12 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
             Ok(Reply::Json(
                 json!({ "name": rec.spec.name, "log": lines, "started": started }),
             ))
+        }
+        (Method::Post, ["api", "vms", name, "accel", mode]) => {
+            let mode: crate::engine::AccelMode = serde_json::from_value(json!(mode))
+                .map_err(|_| (400, format!("unknown mode {mode}")))?;
+            ops::set_accel_mode(name, mode).map_err(bad)?;
+            Ok(Reply::Json(json!({ "ok": true })))
         }
         (Method::Post, ["api", "vms", name, action]) => {
             match *action {
@@ -343,6 +350,8 @@ struct CreateBody {
     start: bool,
     #[serde(default)]
     engine: Option<String>,
+    #[serde(default)]
+    accel_mode: crate::engine::AccelMode,
 }
 
 #[derive(Deserialize)]

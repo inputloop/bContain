@@ -53,6 +53,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .running .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .kernelBtn, .hvBtn { margin-top: 6px; }
+.accelSel { display: block; margin-top: 4px; font-size: 11px; padding: 2px 4px; }
 .hvLog { margin-top: 6px; max-height: 160px; font-size: 11px; }
 .crash { color: var(--bad); font-size: 12px; max-width: 260px; overflow-wrap: anywhere; margin-top: 2px; }
 .kind { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); }
@@ -189,9 +190,17 @@ button.big { padding: 9px 18px; }
             <option value="max">max</option><option value="container">container</option>
           </select>
         </label>
+        <label>vCPUs <input name="cpus" type="number" min="1" max="64" placeholder="from preset"></label>
         <label>Memory <input name="memory" placeholder="from preset, e.g. 16G"></label>
         <label id="diskField" hidden>New disk size <input name="disk_size" value="64G"></label>
         <label>Ports <input name="ports" placeholder="host:guest, e.g. 8080:80"></label>
+        <label id="accelField">Acceleration
+          <select name="accel_mode" title="If a VM shows nothing or crashes, try another mode">
+            <option value="auto">automatic</option>
+            <option value="compat">compatibility</option>
+            <option value="software">software (slow)</option>
+          </select>
+        </label>
         <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows guest (SATA disk and e1000e network, no virtio drivers needed)</label>
         <label class="checkbox wide" id="nativeField" hidden><input type="checkbox" name="native"> Run on bContain's own hypervisor (experimental: 1 vCPU, no network yet)</label>
         <label class="checkbox wide"><input type="checkbox" name="start" checked> Start it right away</label>
@@ -249,6 +258,8 @@ async function loadHost() {
     <td>${esc(p.sizing.display)}</td></tr>`).join("");
 }
 async function loadVms() {
+  // Don't rebuild the table under an open dropdown.
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#vms select")) return;
   const vms = await api("GET", "/api/vms");
   if (!vms.length) { $("#vms").innerHTML = `<tr><td colspan="7" class="empty">No machines yet. Choose an image under <b>Add a machine</b>.</td></tr>`; return; }
   $("#vms").innerHTML = vms.map(v => {
@@ -257,7 +268,10 @@ async function loadVms() {
       <td style="overflow-wrap:anywhere"><b>${esc(v.name)}</b></td>
       <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span>
         ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
-      <td><span class="kind">${esc(v.kind)}</span></td>
+      <td><span class="kind">${esc(v.kind)}</span>
+        ${v.kind === "vm" ? `<select class="accelSel" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Acceleration: if this VM shows nothing or crashes, try another mode">
+          ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility", software: "software (slow)"}[m]}</option>`).join("")}
+        </select>` : ""}</td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
       <td class="src" title="${esc(v.source)}">${esc(v.source)}</td>
       <td><div class="actions">
@@ -268,6 +282,12 @@ async function loadVms() {
       </div></td></tr>`;
   }).join("");
 }
+$("#vms").addEventListener("change", async (e) => {
+  const sel = e.target.closest(".accelSel"); if (!sel) return;
+  try { await api("POST", `/api/vms/${encodeURIComponent(sel.dataset.n)}/accel/${sel.value}`); }
+  catch (err) { alert(err.message); }
+  loadVms();
+});
 $("#vms").addEventListener("click", async (e) => {
   const b = e.target.closest("button"); if (!b) return;
   const n = b.dataset.n, act = b.dataset.act;
@@ -377,9 +397,11 @@ createForm.addEventListener("submit", async (e) => {
   try {
     const r = await api("POST", "/api/vms", {
       name: f.get("name"), image, preset: f.get("preset"), memory: f.get("memory"),
+      cpus: f.get("cpus") ? Number(f.get("cpus")) : null,
       disk_size: $("#diskField").hidden ? "" : f.get("disk_size"),
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
       legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on",
+      accel_mode: f.get("accel_mode") || "auto",
       engine: !$("#nativeField").hidden && f.get("native") === "on" ? "native" : "" });
     msg.textContent = [...r.log, r.started ? `${r.name} is running.` : `Created ${r.name}.`].join("\n");
     createForm.reset(); delete createForm.elements.name.dataset.touched; delete createForm.elements.legacy.dataset.touched;

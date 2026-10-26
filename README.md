@@ -197,6 +197,19 @@ folder next to the binary takes priority, as on Windows.
 - **Windows guests:** use `--legacy-devices` (SATA disk + e1000e NIC) for stock
   Windows installers, which ship without virtio drivers.
 
+## Troubleshooting a VM on Windows
+
+QEMU's window can show two placeholder messages:
+
+| The window says | What it means | Try |
+|---|---|---|
+| *Guest has not initialized the display (yet)* | Nothing has run, not even the BIOS. The virtual CPU is stuck at the very start. | Set the VM's **Acceleration** (dropdown in the Machines list) to **compatibility**, and/or give it **1 vCPU**. **software (slow)** always works, which tells us whether the hypervisor is the problem. |
+| *Display output is not active* | The guest turned its display off. | Fixed by making the basic display a standard VGA card; rebuild if you still see it. |
+
+If a VM stops with an error, the Machines list shows it in red under the
+VM, and **Log** shows QEMU's full output, starting with the exact command
+line.
+
 ## Command reference
 
 | Command | What it does |
@@ -215,7 +228,7 @@ folder next to the binary takes priority, as on Windows.
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
 
-Options shared by `create` and `run`: `--engine qemu|native`, `--preset`, `--cpus`, `--memory 16G`,
+Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--preset`, `--cpus`, `--memory 16G`,
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`,
 `-p HOST:GUEST`, `-e KEY=VALUE`, `--kernel`.
 
