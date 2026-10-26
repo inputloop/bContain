@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
 //! Backend-neutral VM description and the `Hypervisor` trait.
 //!
 //! Everything above this module (CLI, web UI, OCI runner) builds a [`VmSpec`]

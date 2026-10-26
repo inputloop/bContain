@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
 //! Minimal OCI distribution client: pull public linux/amd64 images from
 //! Docker Hub or any v2 registry into a local OCI image layout, so no Docker
 //! install is needed.

@@ -1,3 +1,5 @@
+<!-- SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors -->
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Native VMM roadmap (`crates/bvmm`)
 
 bContain ships on QEMU today. The plan is for bContain to grow its own

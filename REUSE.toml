@@ -1,0 +1,27 @@
+version = 1
+
+# colophon: begin (written by colophon.py 2.0; change the terms in colophon, not here)
+[[annotations]]
+path = [
+  ".gitignore",
+  "Cargo.lock",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = ["2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors"]
+SPDX-License-Identifier = "GPL-3.0-or-later OR LGPL-3.0-or-later"
+
+[[annotations]]
+path = [
+  "docs/screenshots/cli-doctor.png",
+  "docs/screenshots/cli-list.png",
+  "docs/screenshots/cli-presets.png",
+  "docs/screenshots/cli-run-container.png",
+  "docs/screenshots/dashboard-dark.png",
+  "docs/screenshots/dashboard-light.png",
+  "docs/screenshots/dashboard-mobile.png",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = ["2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors"]
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# colophon: end

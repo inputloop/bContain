@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
+// SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
 //! Sizing presets tuned for the RTX 3080 Ti / Core i9 / 32 GB reference laptop.
 //!
 //! Presets are computed from the *detected* host, so a bigger machine
