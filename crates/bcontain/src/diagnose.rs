@@ -61,8 +61,16 @@ fn classify(size: Option<(u32, u32)>) -> Outcome {
     }
 }
 
-/// The variants to try, each a change to the VM as configured.
-fn variants(spec: &VmSpec) -> Vec<(String, VmSpec)> {
+fn mode_label(mode: AccelMode) -> &'static str {
+    match mode {
+        AccelMode::Auto => "automatic",
+        AccelMode::Compat => "compatibility",
+        AccelMode::Software => "software",
+    }
+}
+
+/// Round one: the VM as configured, then each other acceleration mode.
+fn mode_variants(spec: &VmSpec) -> Vec<(String, VmSpec)> {
     let mut out = vec![("as configured".to_string(), spec.clone())];
     for (mode, label) in [
         (AccelMode::Auto, "acceleration: automatic"),
@@ -75,6 +83,15 @@ fn variants(spec: &VmSpec) -> Vec<(String, VmSpec)> {
             out.push((label.into(), s));
         }
     }
+    out
+}
+
+/// Round two: `base` (a mode that got stuck) without each piece of its
+/// hardware in turn. Trying these in a mode that works would only confirm
+/// that it works.
+fn hardware_variants(base: &VmSpec) -> Vec<(String, VmSpec)> {
+    let spec = base;
+    let mut out = Vec::new();
     let mut add = |label: &str, change: &dyn Fn(&mut VmSpec) -> bool| {
         let mut s = spec.clone();
         if change(&mut s) {
@@ -259,15 +276,49 @@ pub fn run(name: &str, report: &mut dyn FnMut(String), trying: &mut dyn FnMut(&s
         bail!("stop `{name}` first");
     }
     let work = store::vm_dir(name);
-    let all = variants(&rec.spec);
+    let mut run_round = |round: &[(String, VmSpec)], report: &mut dyn FnMut(String)| {
+        let mut stuck = Vec::new();
+        for (label, spec) in round {
+            trying(label);
+            let outcome =
+                probe(&q, spec, &work).unwrap_or_else(|e| Outcome::Exited(format!("{e:#}")));
+            if !matches!(outcome, Outcome::Drew(..)) {
+                stuck.push(spec.clone());
+            }
+            report(format!("  {label:<46} {outcome}"));
+        }
+        stuck
+    };
+    let modes = mode_variants(&rec.spec);
     report(format!(
-        "Booting `{name}` {} ways without a window (15 s each, 60 s in software mode):",
-        all.len()
+        "Booting `{name}` without a window, 15 s each (60 s in software mode). Round 1, acceleration modes ({}):",
+        modes.len()
     ));
-    for (label, spec) in &all {
-        trying(label);
-        let outcome = probe(&q, spec, &work).unwrap_or_else(|e| Outcome::Exited(format!("{e:#}")));
-        report(format!("  {label:<46} {outcome}"));
+    let stuck = run_round(&modes, report);
+    // Diagnose the mode the VM is set to if that is stuck, else the first
+    // other stuck mode (automatic, normally): that is the one worth fixing.
+    let Some(base) = stuck.first() else {
+        report("Every mode reaches the firmware: the VM stops later, inside the guest. Watch its window for where.".into());
+        return Ok(());
+    };
+    if base.accel_mode == AccelMode::Software {
+        report("Only software mode is stuck; the hardware modes work, so use one of those.".into());
+        return Ok(());
+    }
+    let hw = hardware_variants(base);
+    report(format!(
+        "Round 2, {} mode without each piece of hardware in turn ({}):",
+        mode_label(base.accel_mode),
+        hw.len()
+    ));
+    let still = run_round(&hw, report);
+    if still.len() == hw.len() {
+        report(format!(
+            "Nothing helps: {} mode itself stops this VM before the firmware on this machine. Use another mode.",
+            mode_label(base.accel_mode)
+        ));
+    } else {
+        report("The OK lines name what to change for this mode to work.".into());
     }
     report("Send this table to whoever is helping you; nothing about the VM was changed.".into());
     Ok(())

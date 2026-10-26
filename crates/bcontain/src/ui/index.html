@@ -325,14 +325,15 @@ $("#vms").addEventListener("click", async (e) => {
       const url = `/api/vms/${encodeURIComponent(n)}/diagnose`;
       try {
         await api("POST", url);
-        const started = Date.now();
+        let stepStart = Date.now(), lastStep = null;
         for (;;) {
           await new Promise(r => setTimeout(r, 1500));
           const j = await api("GET", url);
           if (!j) continue;
-          const secs = Math.round((Date.now() - started) / 1000);
+          if (j.trying !== lastStep) { lastStep = j.trying; stepStart = Date.now(); }
+          const secs = Math.round((Date.now() - stepStart) / 1000);
           $("#log").textContent = j.lines.join("\n") +
-            (j.trying ? `\n  … trying: ${j.trying} (${secs} s so far)` : "");
+            (j.trying ? `\n  … trying: ${j.trying} (${secs} s on this step)` : "");
           if (j.done) break;
         }
       } catch (err) { $("#log").textContent += "\n" + err.message; }
