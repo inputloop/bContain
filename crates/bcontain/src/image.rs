@@ -112,6 +112,77 @@ pub fn sniff(path: &Path) -> Result<ImageKind> {
     Ok(ImageKind::Disk(DiskFormat::Raw))
 }
 
+/// What a raw disk's GPT partition table says about booting it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct GptInfo {
+    /// Has an EFI System Partition: UEFI can boot it.
+    pub esp: bool,
+    /// Has a BIOS boot partition: legacy BIOS (via GRUB) can boot it too.
+    pub bios_boot: bool,
+    /// Partition names, as written in the table.
+    pub names: Vec<String>,
+}
+
+impl GptInfo {
+    /// Only UEFI can start this disk.
+    pub fn uefi_only(&self) -> bool {
+        self.esp && !self.bios_boot
+    }
+
+    /// SteamOS's A/B partition layout.
+    pub fn looks_like_steamos(&self) -> bool {
+        let has = |n: &str| self.names.iter().any(|x| x.eq_ignore_ascii_case(n));
+        has("rootfs-A") && (has("efi-A") || has("var-A"))
+    }
+}
+
+/// GUIDs as stored on disk (first three fields little-endian).
+const ESP_GUID: [u8; 16] = [
+    0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11, 0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+];
+const BIOS_BOOT_GUID: [u8; 16] = [
+    0x48, 0x61, 0x68, 0x21, 0x49, 0x64, 0x6f, 0x6e, 0x74, 0x4e, 0x65, 0x65, 0x64, 0x45, 0x46, 0x49,
+];
+
+/// Read the GPT of a raw disk image (512- or 4096-byte sectors).
+pub fn gpt_info(path: &Path) -> Option<GptInfo> {
+    let mut f = File::open(path).ok()?;
+    for sector in [512u64, 4096] {
+        let mut hdr = [0u8; 92];
+        f.seek(SeekFrom::Start(sector)).ok()?;
+        if read_up_to(&mut f, &mut hdr).ok()? < 92 || &hdr[..8] != b"EFI PART" {
+            continue;
+        }
+        let le32 = |o: usize| u32::from_le_bytes(hdr[o..o + 4].try_into().unwrap());
+        let entries_lba = u64::from_le_bytes(hdr[72..80].try_into().unwrap());
+        let count = le32(80).min(256) as usize;
+        let size = le32(84) as usize;
+        if !(128..=512).contains(&size) {
+            return None;
+        }
+        let mut table = vec![0u8; count * size];
+        f.seek(SeekFrom::Start(entries_lba * sector)).ok()?;
+        let n = read_up_to(&mut f, &mut table).ok()?;
+        let mut info = GptInfo::default();
+        for e in table[..n].chunks_exact(size) {
+            let kind: [u8; 16] = e[..16].try_into().unwrap();
+            if kind == [0; 16] {
+                continue;
+            }
+            info.esp |= kind == ESP_GUID;
+            info.bios_boot |= kind == BIOS_BOOT_GUID;
+            let name: Vec<u16> = e[56..128]
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .take_while(|&c| c != 0)
+                .collect();
+            info.names.push(String::from_utf16_lossy(&name));
+        }
+        return Some(info);
+    }
+    None
+}
+
 fn read_up_to(f: &mut File, buf: &mut [u8]) -> Result<usize> {
     let mut total = 0;
     while total < buf.len() {
@@ -133,6 +204,44 @@ mod tests {
         let p = std::env::temp_dir().join(format!("bcontain-sniff-{}-{name}", std::process::id()));
         File::create(&p).unwrap().write_all(bytes).unwrap();
         p
+    }
+
+    /// A 64 KiB disk with a GPT: header at LBA 1, entries at LBA 2.
+    fn gpt_disk(parts: &[([u8; 16], &str)]) -> Vec<u8> {
+        let mut d = vec![0u8; 64 * 1024];
+        d[512..520].copy_from_slice(b"EFI PART");
+        d[512 + 72..512 + 80].copy_from_slice(&2u64.to_le_bytes());
+        d[512 + 80..512 + 84].copy_from_slice(&(parts.len() as u32).to_le_bytes());
+        d[512 + 84..512 + 88].copy_from_slice(&128u32.to_le_bytes());
+        for (i, (kind, name)) in parts.iter().enumerate() {
+            let e = 1024 + i * 128;
+            d[e..e + 16].copy_from_slice(kind);
+            for (j, c) in name.encode_utf16().enumerate() {
+                d[e + 56 + j * 2..e + 58 + j * 2].copy_from_slice(&c.to_le_bytes());
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn reads_gpt() {
+        let linux = [1u8; 16];
+        let steam = gpt_disk(&[
+            (ESP_GUID, "esp"),
+            (linux, "efi-A"),
+            (linux, "rootfs-A"),
+            (linux, "home"),
+        ]);
+        let g = gpt_info(&tmp("gpt-steam", &steam)).unwrap();
+        assert!(g.esp && !g.bios_boot && g.uefi_only());
+        assert!(g.looks_like_steamos());
+        assert_eq!(g.names, ["esp", "efi-A", "rootfs-A", "home"]);
+
+        let both = gpt_disk(&[(BIOS_BOOT_GUID, "bios"), (ESP_GUID, "EFI"), (linux, "root")]);
+        let g = gpt_info(&tmp("gpt-both", &both)).unwrap();
+        assert!(!g.uefi_only() && !g.looks_like_steamos());
+
+        assert!(gpt_info(&tmp("gpt-none", &[0u8; 8192])).is_none());
     }
 
     #[test]

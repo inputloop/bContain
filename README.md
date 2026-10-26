@@ -62,8 +62,10 @@ enabling the Windows feature below once.
 ## SteamOS
 
 bContain installs Valve's SteamOS from its official recovery image
-(`steamdeck-repair-*.img.bz2`, from Valve's Steam Deck recovery page), the
-same way a Steam Deck does:
+(`steamdeck-oobe-repair-*.img.bz2` or `steamdeck-repair-*.img.bz2`, from
+Valve's Steam Deck recovery page, compressed or already unpacked), the same
+way a Steam Deck does. It is recognised by name or, if renamed, by its
+partition layout:
 
 1. Choose the `.img.bz2` in **Add a machine** (or
    `bcontain create steamos steamdeck-repair-….img.bz2`). bContain unpacks it

@@ -156,7 +156,12 @@ pub fn is_steamos_image(path: &Path) -> bool {
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    n.contains("steamdeck-repair") || n.contains("steamdeck-recovery") || n.starts_with("steamos")
+    let named = n.contains("steamos")
+        || (n.contains("steamdeck")
+            && ["repair", "recovery", "oobe"].iter().any(|k| n.contains(k)));
+    // A renamed file is still SteamOS if its partitions say so (compressed
+    // images are recognised by name until they are unpacked).
+    named || image::gpt_info(path).is_some_and(|g| g.looks_like_steamos())
 }
 
 pub fn image_dir_name(r: &Reference) -> String {
@@ -278,6 +283,18 @@ pub fn create(
         }
         Resolved::Disk(path, format) => {
             let cdrom = format == DiskFormat::Iso;
+            // A GPT disk with an EFI system partition but no BIOS boot
+            // partition cannot start under SeaBIOS ("Booting from Hard
+            // Disk..." and nothing more).
+            if format == DiskFormat::Raw
+                && opts.firmware.is_none()
+                && image::gpt_info(&path).is_some_and(|g| g.uefi_only())
+            {
+                log(
+                    "UEFI-only disk (GPT with an EFI system partition): using UEFI firmware".into(),
+                );
+                spec.firmware = Firmware::Uefi;
+            }
             spec.disks.push(Disk {
                 path,
                 format,
