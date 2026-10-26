@@ -24,10 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
-      - run: cargo build --release
       - run: .\scripts\bundle-qemu-windows.ps1
         shell: pwsh
       - uses: actions/upload-artifact@v4
         with:
-          name: bcontain-windows
-          path: dist/bcontain-windows.zip
+          name: bContain-windows
+          path: dist/bContain.exe

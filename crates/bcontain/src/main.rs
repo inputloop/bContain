@@ -3,6 +3,7 @@
 //! bcontain: a standalone VM + container runner for Windows and Linux,
 //! tuned for RTX 3080 Ti / Core i9 / 32 GB laptops (or better).
 
+mod desktop;
 mod engine;
 mod host;
 mod image;
@@ -16,7 +17,7 @@ mod web;
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::engine::{Display, Firmware, Hypervisor};
@@ -30,8 +31,9 @@ use crate::preset::Preset;
     about = "Standalone VMs and containers, tuned for RTX 3080 Ti / Core i9 / 32 GB"
 )]
 struct Cli {
+    /// With no command, bContain opens its app window (what a double-click does).
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -130,7 +132,7 @@ enum KernelCmd {
     Path,
 }
 
-const KERNEL_IMAGE: &str = "linuxkit/kernel:6.12.59";
+pub const KERNEL_IMAGE: &str = "linuxkit/kernel:6.12.59";
 
 #[derive(Args, Default)]
 struct Tune {
@@ -218,7 +220,11 @@ fn say(msg: String) {
 
 fn real_main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.cmd {
+    // No subcommand: started by double-clicking the executable. Open the app.
+    let Some(cmd) = cli.cmd else {
+        return web::app();
+    };
+    match cmd {
         Cmd::Doctor { json } => doctor(json),
         Cmd::Presets => {
             let host = Host::detect();
@@ -470,24 +476,8 @@ fn kernel(cmd: KernelCmd) -> Result<()> {
             println!("installed {}", target.display());
         }
         KernelCmd::Fetch { image } => {
-            let ops::Resolved::Oci(dir) = ops::resolve_image(&image, &mut say)? else {
-                bail!("{image} is not an OCI image");
-            };
-            let tree = oci::Image::open(&dir)?.flatten()?;
-            let Some(oci::Node {
-                kind: oci::Kind::File(data),
-                ..
-            }) = tree.nodes.get("kernel")
-            else {
-                bail!("{image} has no /kernel file");
-            };
-            std::fs::create_dir_all(store::kernel_dir())?;
-            std::fs::write(&target, data)?;
-            println!(
-                "installed {} ({:.1} MiB)",
-                target.display(),
-                data.len() as f64 / 1048576.0
-            );
+            let path = ops::fetch_kernel(&image, &mut say)?;
+            println!("installed {}", path.display());
         }
     }
     Ok(())

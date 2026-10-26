@@ -20,14 +20,44 @@ Linux**. It is tuned for an **RTX 3080 Ti / Core i9 / 32 GB laptop, or better**.
   `Hypervisor` trait, and `crates/bvmm` is where the native VMM is being built
   (see [docs/NATIVE-VMM.md](docs/NATIVE-VMM.md)).
 
-![Dashboard (dark)](docs/screenshots/dashboard-dark.png)
+## Windows: one file, double-click
+
+**`bContain.exe` is the whole app.** QEMU is built into it. Double-click it
+and bContain opens in its own window. Choose an image, press **Create
+machine**, and the VM starts. Closing the window quits bContain; VMs that
+are still running keep running.
+
+Choosing an image happens entirely in the window:
+
+- **Browse…** opens the normal Windows "Open" dialog, filtered to VM and
+  container images.
+- **On this PC** lists the images bContain finds in Downloads, Desktop,
+  Documents, `VMs`, `ISOs`, `C:\ISOs` and `C:\VMs`. Click one to select it.
+- **Container images** are one-click picks (Alpine, Ubuntu, Debian, nginx,
+  Python, Node), or you can type the name of any public image.
+- Whatever you choose is identified straight away (ISO installer, VHDX disk,
+  container image…). The name is filled in for you. ISOs get a new-disk-size
+  field, and Windows installers get **Windows guest** ticked automatically.
+
+![Choosing an image](docs/screenshots/choose-image.png)
+
+| Picking a container image | The whole window |
+|---|---|
+| ![Choosing a container](docs/screenshots/choose-container.png) | ![Dashboard (dark)](docs/screenshots/dashboard-dark.png) |
+
+The first launch unpacks QEMU to `%LOCALAPPDATA%\bcontain\qemu` (once).
+Nothing else is installed, and you don't need admin rights, apart from
+enabling the Windows feature below once.
 
 > The screenshots are real output, captured in a cloud sandbox with a 4-thread
 > Xeon, no GPU and no KVM. That is why `doctor` flags everything there and
 > shows the fixes it would suggest. On the reference laptop those rows are
 > green.
 
-## Quick start
+## Command line (both systems)
+
+Double-clicking runs `bcontain` with no arguments, which opens the app
+window. Everything is also available as commands:
 
 ```sh
 bcontain doctor                     # check this machine against the reference build
@@ -70,11 +100,16 @@ On the reference i9-12900HK (14 cores / 20 threads, 32 GB), `rtx3080ti` gives
 
 ![bcontain presets](docs/screenshots/cli-presets.png)
 
-## Web dashboard: `bcontain ui`
+## The app window / `bcontain ui`
 
-Lists, creates, starts, stops and deletes machines, and shows their logs. It
-binds to `127.0.0.1` only. State-changing requests need an `X-Bcontain`
-header, so other websites cannot control your VMs through your browser.
+The window is a local web page shown in an Edge (or Chrome) app window, with
+no address bar or tabs. Double-clicking opens it. `bcontain ui --open` opens
+it from a terminal and keeps it running until Ctrl+C.
+
+It binds to `127.0.0.1` only. It refuses requests addressed to any other host
+name, which blocks DNS-rebinding attacks. State-changing requests need an
+`X-Bcontain` header, so other websites cannot control your VMs through your
+browser.
 
 | Light | Mobile |
 |---|---|
@@ -84,17 +119,19 @@ header, so other websites cannot control your VMs through your browser.
 
 ### Windows 10/11
 
-1. Enable **Windows Hypervisor Platform** (needs admin, then a reboot):
+1. Turn on **Windows Hypervisor Platform** once, for full speed. Open
+   PowerShell as administrator, run this, then reboot:
    ```powershell
    Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform
    ```
-2. Unzip `bcontain-windows.zip`. It contains `bcontain.exe` with QEMU in a
-   `qemu\` folder beside it, so nothing else needs installing.
-3. Run `bcontain doctor`.
+   Without it, VMs still run, but with slow software emulation. The app's
+   "This machine" panel shows whether it is on.
+2. Get `bContain.exe` (from the CI artifact, or build it yourself as shown
+   below) and double-click it.
 
-To build the zip yourself: `cargo build --release`, then
-`.\scripts\bundle-qemu-windows.ps1`. This downloads the official QEMU Windows
-build and unpacks it with 7-Zip.
+To build it yourself, run `.\scripts\bundle-qemu-windows.ps1`. It needs Rust
+and 7-Zip. The script downloads the official QEMU Windows build, keeps only
+what an x86_64 host needs, and builds `dist\bContain.exe` with QEMU inside it.
 
 ### Linux
 
@@ -112,7 +149,7 @@ folder next to the binary takes priority, as on Windows.
 
 | What | Search order |
 |---|---|
-| QEMU | `$BCONTAIN_QEMU` → `qemu/` next to `bcontain` → `C:\Program Files\qemu` → `PATH` |
+| QEMU | `$BCONTAIN_QEMU` → the copy built into the exe → `qemu/` next to `bcontain` → `C:\Program Files\qemu` → `PATH` |
 | Container kernel | `--kernel` → `$BCONTAIN_KERNEL` → `kernel/vmlinuz` next to `bcontain` → `<data>/kernel/vmlinuz` |
 | Data | `$BCONTAIN_HOME` → `%LOCALAPPDATA%\bcontain` / `~/.local/share/bcontain` |
 
@@ -136,6 +173,7 @@ folder next to the binary takes priority, as on Windows.
 
 | Command | What it does |
 |---|---|
+| *(no command)* | Open the app window. This is what double-clicking does |
 | `doctor [--json]` | Check the host against the reference build |
 | `presets` | Show each preset's sizing on this host |
 | `create NAME IMAGE [opts] [-- CMD…]` | Define a VM or container. Creating from an ISO adds a blank disk (`--disk-size`, default 64G) |
@@ -185,7 +223,9 @@ crates/bcontain/src/
   preset.rs    host-relative sizing presets
   store.rs     per-VM state on disk
   ops.rs       operations shared by CLI and web UI
-  web.rs, ui/  local dashboard
+  web.rs, ui/  the app window (local dashboard) and its API
+  desktop.rs   app window, native file dialog, finding images on this PC
+crates/bcontain/build.rs   embeds QEMU into the exe for the single-file build
 crates/bvmm/   native-VMM seam: accelerator probing, future hypervisor
 scripts/       Windows QEMU bundler, Linux packager, screenshot generator
 ```
@@ -200,13 +240,22 @@ node scripts/screenshots.js target/debug/bcontain   # regenerate docs/screenshot
 
 What has been verified, and where:
 
-- **In the Linux sandbox:** all tests pass, and the Windows target
-  cross-compiles. A two-layer image with a whiteout booted end to end and ran
-  its command (shown above). The full create → start → list → logs → stop
-  (ACPI and forced) → remove lifecycle works, as does creating an ISO VM with
-  a blank qcow2 disk. The dashboard API was exercised, including its
-  cross-site guard.
-- **Not yet verified on real hardware:** the WHPX path on Windows, virgl on an
-  NVIDIA GPU, registry pulls (the sandbox's registry traffic was rate-limited
-  or blocked; the auth handshake itself completed), and the Windows bundling
-  script and CI workflow.
+- **In the Linux sandbox:**
+  - All tests pass, and the Windows target cross-compiles.
+  - A two-layer image with a whiteout booted end to end and ran its command.
+  - The full create → start → list → logs → stop (ACPI and forced) → remove
+    lifecycle works, as does creating an ISO VM with a blank qcow2 disk.
+  - The app's image chooser works: scanning found every seeded image, image
+    inspection worked, and create-and-start from the GUI path booted a
+    container.
+  - The embedded-QEMU mechanism works: a binary with QEMU built in, with
+    QEMU removed from `PATH`, unpacked it on first run and booted a
+    container with it.
+  - The host-name and header guards on the local server reject forged
+    requests.
+- **Not yet verified on real hardware:**
+  - On Windows: double-clicking, the Edge app window, the Windows "Open"
+    dialog, WHPX, and the bundling script and CI workflow.
+  - virgl on an NVIDIA GPU.
+  - Registry pulls: the sandbox's registry traffic was rate-limited or
+    blocked, though the auth handshake itself completed.

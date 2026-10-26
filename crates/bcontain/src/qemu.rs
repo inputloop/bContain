@@ -354,6 +354,11 @@ fn find_binary() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let mut candidates = Vec::new();
+    match embedded::unpack() {
+        Ok(Some(p)) => return Some(p),
+        Ok(None) => {}
+        Err(e) => eprintln!("warning: could not unpack the bundled QEMU: {e:#}"),
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("qemu").join(EXE));
@@ -367,6 +372,57 @@ fn find_binary() -> Option<PathBuf> {
         candidates.extend(std::env::split_paths(&path).map(|d| d.join(EXE)));
     }
     candidates.into_iter().find(|p| p.is_file())
+}
+
+/// The QEMU build carried inside the executable (single-file Windows build).
+mod embedded {
+    use std::path::PathBuf;
+
+    use anyhow::Result;
+
+    #[cfg(embedded_qemu)]
+    static PAYLOAD: &[u8] = include_bytes!(env!("BCONTAIN_QEMU_PAYLOAD"));
+
+    /// Unpack once per payload into `<data>/qemu/embedded-<size>/` and return
+    /// the QEMU binary there. `None` when this build carries no QEMU.
+    pub fn unpack() -> Result<Option<PathBuf>> {
+        #[cfg(not(embedded_qemu))]
+        {
+            Ok(None)
+        }
+        #[cfg(embedded_qemu)]
+        {
+            use anyhow::Context;
+            let dir = crate::store::data_dir()
+                .join("qemu")
+                .join(concat!("embedded-", env!("BCONTAIN_QEMU_PAYLOAD_LEN")));
+            let exe = dir.join(super::EXE);
+            if dir.join(".complete").is_file() && exe.is_file() {
+                return Ok(Some(exe));
+            }
+            eprintln!(
+                "unpacking bundled QEMU to {} (first run only)",
+                dir.display()
+            );
+            let tmp = dir.with_extension("partial");
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp)?;
+            tar::Archive::new(flate2::read::GzDecoder::new(PAYLOAD))
+                .unpack(&tmp)
+                .context("unpacking QEMU payload")?;
+            std::fs::write(tmp.join(".complete"), b"")?;
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::rename(&tmp, &dir)?;
+            Ok(Some(exe).filter(|p| p.is_file()))
+        }
+    }
+
+    /// Whether this executable carries its own QEMU.
+    pub const PRESENT: bool = cfg!(embedded_qemu);
+}
+
+pub fn has_embedded_qemu() -> bool {
+    embedded::PRESENT
 }
 
 /// QEMU option values use `,` as a separator; a literal comma is written `,,`.

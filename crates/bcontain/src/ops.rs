@@ -308,6 +308,30 @@ pub fn views() -> Result<Vec<VmView>> {
         .collect())
 }
 
+/// Download a container-ready kernel from an OCI image that carries `/kernel`
+/// (linuxkit/kernel) and install it as the guest kernel.
+pub fn fetch_kernel(image: &str, log: &mut dyn FnMut(String)) -> Result<PathBuf> {
+    let Resolved::Oci(dir) = resolve_image(image, log)? else {
+        bail!("{image} is not an OCI image");
+    };
+    let tree = oci::Image::open(&dir)?.flatten()?;
+    let Some(oci::Node {
+        kind: oci::Kind::File(data),
+        ..
+    }) = tree.nodes.get("kernel")
+    else {
+        bail!("{image} has no /kernel file");
+    };
+    let target = store::kernel_dir().join("vmlinuz");
+    fs::create_dir_all(store::kernel_dir())?;
+    fs::write(&target, data)?;
+    log(format!(
+        "installed kernel ({:.1} MiB)",
+        data.len() as f64 / 1048576.0
+    ));
+    Ok(target)
+}
+
 fn qemu_img_create(path: &Path, size_mib: u64) -> Result<()> {
     let qemu = crate::qemu::Qemu::locate()?;
     let exe = if cfg!(windows) {

@@ -78,5 +78,19 @@ ${esc(text)
     await page.close();
     console.log(`${name}.png`);
   }
+
+  // The "Add a machine" flow: pick a found ISO, then a container image.
+  const page = await browser.newPage({ viewport: { width: 1360, height: 1000 }, colorScheme: "dark", deviceScaleFactor: 2 });
+  await page.goto(url);
+  await page.waitForSelector("#found .item");
+  await page.locator("#found .item", { hasText: ".iso" }).first().click();
+  await page.waitForSelector("#imageInfo .tag");
+  await page.locator("#add").screenshot({ path: path.join(out, "choose-image.png") });
+  console.log("choose-image.png");
+  await page.locator(".tab", { hasText: "Container images" }).click();
+  await page.locator(".chip", { hasText: "Alpine" }).click();
+  await page.waitForFunction(() => document.querySelector("#imageInfo").textContent.includes("Docker Hub"));
+  await page.locator("#add").screenshot({ path: path.join(out, "choose-container.png") });
+  console.log("choose-container.png");
   await browser.close();
 })();

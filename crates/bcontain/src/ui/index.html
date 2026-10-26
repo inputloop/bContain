@@ -6,6 +6,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>bContain</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%2376b900%22/%3E%3Ctext x=%2216%22 y=%2223%22 font-size=%2219%22 font-family=%22sans-serif%22 font-weight=%22800%22 text-anchor=%22middle%22 fill=%22%230b1400%22%3Eb%3C/text%3E%3C/svg%3E">
 <style>
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --ink: #14171c; --muted: #5d6673; --line: #e2e5ea;
@@ -20,6 +21,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
 header { display: flex; align-items: center; gap: 14px; padding: 16px 24px;
@@ -30,7 +32,7 @@ header { display: flex; align-items: center; gap: 14px; padding: 16px 24px;
 .spacer { flex: 1; }
 .badge { white-space: nowrap; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--chip); }
 .badge.ok { color: var(--ok); } .badge.bad { color: var(--warn); }
-main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px;
+main { max-width: 1320px; margin: 0 auto; padding: 20px 16px 48px;
   display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; min-width: 0; }
@@ -45,20 +47,20 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px 16px 48px;
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
 th { font-size: 12px; color: var(--muted); font-weight: 600; border-top: 0; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .scroll { overflow-x: auto; }
 .state { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .running .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .kind { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); }
-.src { color: var(--muted); max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src { color: var(--muted); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
   padding: 5px 11px; border-radius: 7px; cursor: pointer; }
 button:hover { border-color: var(--muted); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
 button.danger { color: var(--bad); }
 button:disabled { opacity: .45; cursor: default; }
-.actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
 form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; }
 label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 input, select { font: inherit; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line);
@@ -80,10 +82,36 @@ pre { background: var(--code); border-radius: 8px; padding: 12px; max-height: 32
   .vmtable td.num { text-align: left; color: var(--muted); }
   .vmtable td.src { grid-column: 2 / -1; max-width: none; }
   .vmtable td:last-child { grid-column: 1 / -1; }
-  .vmtable .actions { justify-content: flex-start; }
+  .vmtable .actions { justify-content: flex-start; flex-wrap: wrap; }
   .vmtable .unit { display: inline; }
 }
 .unit { display: none; }
+.step { display: flex; align-items: center; gap: 8px; font-weight: 650; margin: 14px 0 8px; }
+.step:first-of-type { margin-top: 0; }
+.stepnum { width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-ink);
+  display: inline-grid; place-items: center; font-size: 12px; font-weight: 750; }
+.picker { display: flex; gap: 8px; }
+.picker input { flex: 1; padding: 10px 12px; }
+.info { min-height: 20px; margin: 8px 2px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.info .tag { color: var(--ok); font-weight: 600; } .info.err { color: var(--bad); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-top: 6px; }
+.tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 7px 10px; }
+.tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+.pane { padding-top: 10px; }
+.list { display: grid; gap: 4px; max-height: 240px; overflow: auto; }
+.item { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; text-align: left; width: 100%;
+  padding: 8px 10px; border-radius: 8px; border: 1px solid transparent; background: var(--bg); }
+.item:hover, .item.sel { border-color: var(--accent); }
+.item .n { font-weight: 600; overflow-wrap: anywhere; } .item .s { color: var(--muted); font-size: 12px; text-align: right; }
+.item .p { grid-column: 1 / -1; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border-radius: 999px; padding: 6px 14px; }
+.chip.sel { border-color: var(--accent); color: var(--accent); }
+.hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+.banner { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--ink); border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
+.banner button { margin-left: 8px; }
+button.big { padding: 9px 18px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 </style>
 </head>
@@ -120,21 +148,50 @@ pre { background: var(--code); border-radius: 8px; padding: 12px; max-height: 32
         </table>
       </div>
     </section>
-    <section class="card">
-      <h2>New machine</h2>
+    <section class="card" id="add">
+      <h2>Add a machine</h2>
+      <div id="banner" class="banner" hidden></div>
+      <div class="step"><span class="stepnum">1</span> Choose an image</div>
+      <div class="picker">
+        <input id="image" placeholder="Path to an ISO, disk image or container image, or a name like alpine:3.20" autocomplete="off" spellcheck="false">
+        <button class="primary" id="browse" type="button">Browse…</button>
+      </div>
+      <div id="imageInfo" class="info"></div>
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab active" data-tab="found" role="tab">On this PC</button>
+        <button type="button" class="tab" data-tab="hub" role="tab">Container images</button>
+      </div>
+      <div id="tab-found" class="pane">
+        <div id="found" class="list"><div class="empty">Looking in Downloads, Desktop, Documents and VMs…</div></div>
+      </div>
+      <div id="tab-hub" class="pane" hidden>
+        <div class="chips">
+          <button type="button" class="chip" data-img="alpine:3.20">Alpine 3.20</button>
+          <button type="button" class="chip" data-img="ubuntu:24.04">Ubuntu 24.04</button>
+          <button type="button" class="chip" data-img="debian:12">Debian 12</button>
+          <button type="button" class="chip" data-img="nginx:alpine">nginx</button>
+          <button type="button" class="chip" data-img="python:3.12-slim">Python 3.12</button>
+          <button type="button" class="chip" data-img="node:22-alpine">Node 22</button>
+        </div>
+        <p class="hint">Any public image works: type its name above, e.g. <span class="mono">ghcr.io/owner/app:1.0</span>.</p>
+      </div>
+
+      <div class="step"><span class="stepnum">2</span> Settings</div>
       <form id="create">
-        <label>Name <input name="name" required placeholder="ubuntu-dev" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,63}"></label>
+        <label>Name <input name="name" required placeholder="chosen from the image" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}"></label>
         <label>Preset
           <select name="preset">
-            <option value="">auto</option>
-            <option>rtx3080ti</option><option>light</option><option>max</option><option>container</option>
+            <option value="">automatic</option>
+            <option value="rtx3080ti">rtx3080ti: desktop</option><option value="light">light</option>
+            <option value="max">max</option><option value="container">container</option>
           </select>
         </label>
-        <label>Memory <input name="memory" placeholder="from preset"></label>
-        <label>Ports <input name="ports" placeholder="8080:80, 2222:22"></label>
-        <label class="wide">Image <input name="image" required placeholder="C:\ISOs\ubuntu-24.04.iso · disk.qcow2 · alpine:3.20 · app.tar"></label>
-        <label class="checkbox"><input type="checkbox" name="legacy"> Windows guest (SATA + e1000e)</label>
-        <div><button class="primary" type="submit">Create</button></div>
+        <label>Memory <input name="memory" placeholder="from preset, e.g. 16G"></label>
+        <label id="diskField" hidden>New disk size <input name="disk_size" value="64G"></label>
+        <label>Ports <input name="ports" placeholder="host:guest, e.g. 8080:80"></label>
+        <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows guest (SATA disk and e1000e network, no virtio drivers needed)</label>
+        <label class="checkbox wide"><input type="checkbox" name="start" checked> Start it right away</label>
+        <div class="wide"><button class="primary big" type="submit" id="createBtn">Create machine</button></div>
       </form>
       <div id="createMsg" class="msg"></div>
     </section>
@@ -148,6 +205,7 @@ pre { background: var(--code); border-radius: 8px; padding: 12px; max-height: 32
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const gib = (mib) => (mib / 1024).toFixed(1) + " G";
+const size = (mib) => mib >= 1024 ? (mib / 1024).toFixed(1) + " GiB" : mib + " MB";
 async function api(method, path, body) {
   const r = await fetch(path, { method, headers: { "X-Bcontain": "1", "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
@@ -158,6 +216,7 @@ async function api(method, path, body) {
 }
 async function loadHost() {
   const h = await api("GET", "/api/host");
+  HOST = h; updateBanner();
   const v = $("#verdict");
   v.textContent = h.meets_baseline ? "meets reference build" : "below reference build";
   v.className = "badge " + (h.meets_baseline ? "ok" : "bad");
@@ -176,11 +235,11 @@ async function loadHost() {
 }
 async function loadVms() {
   const vms = await api("GET", "/api/vms");
-  if (!vms.length) { $("#vms").innerHTML = `<tr><td colspan="7" class="empty">No machines yet. Create one below.</td></tr>`; return; }
+  if (!vms.length) { $("#vms").innerHTML = `<tr><td colspan="7" class="empty">No machines yet. Choose an image under <b>Add a machine</b>.</td></tr>`; return; }
   $("#vms").innerHTML = vms.map(v => {
     const run = v.state === "running";
     return `<tr>
-      <td><b>${esc(v.name)}</b></td>
+      <td style="overflow-wrap:anywhere"><b>${esc(v.name)}</b></td>
       <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span></td>
       <td><span class="kind">${esc(v.kind)}</span></td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
@@ -208,20 +267,100 @@ async function showLog(n) {
   $("#logCard").hidden = false; $("#logTitle").textContent = `Log · ${n}`;
   $("#log").textContent = (await api("GET", `/api/vms/${encodeURIComponent(n)}/log`)) || "(empty)";
 }
-$("#create").addEventListener("submit", async (e) => {
+let HOST = null, CHOSEN = null;
+const createForm = $("#create");
+function setImage(value, info) {
+  $("#image").value = value;
+  document.querySelectorAll(".item.sel, .chip.sel").forEach(el => el.classList.remove("sel"));
+  document.querySelectorAll(`[data-img="${CSS.escape(value)}"]`).forEach(el => el.classList.add("sel"));
+  if (info) showInfo(info); else inspect();
+}
+let inspectTimer;
+async function inspect() {
+  const v = $("#image").value.trim();
+  if (!v) { showInfo({ ok: false, message: "" }); return; }
+  try { showInfo(await api("POST", "/api/inspect", { image: v })); } catch (e) { showInfo({ ok: false, message: e.message }); }
+}
+function showInfo(i) {
+  CHOSEN = i.ok ? i : null;
+  const el = $("#imageInfo");
+  el.className = "info" + (i.ok || !i.message ? "" : " err");
+  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; updateBanner(); return; }
+  el.innerHTML = `<span class="tag">✔ ${esc(i.kind)}</span>` + (i.size_mib ? ` · ${size(i.size_mib)}` : "") +
+    (i.remote ? " · downloaded when you create it" : "");
+  const name = createForm.elements.name;
+  if (!name.dataset.touched) name.value = i.name || "";
+  $("#diskField").hidden = !i.iso;
+  const legacy = createForm.elements.legacy;
+  if (!legacy.dataset.touched) legacy.checked = !!i.windows;
+  updateBanner();
+}
+function updateBanner() {
+  const b = $("#banner");
+  if (HOST && !HOST.qemu) {
+    b.hidden = false;
+    b.innerHTML = HOST.os === "windows"
+      ? "QEMU was not found. Use the single-file <b>bContain.exe</b> build, which carries its own QEMU."
+      : "QEMU was not found. Install it: <span class=mono>sudo apt install qemu-system-x86 qemu-utils</span>";
+  } else if (CHOSEN && CHOSEN.container && HOST && !HOST.kernel) {
+    b.hidden = false;
+    b.innerHTML = 'Container images need a small Linux kernel (one-time, about 10 MB). <button type="button" id="getKernel">Install it</button>';
+    $("#getKernel").onclick = async (e) => {
+      e.target.disabled = true; e.target.textContent = "Downloading…";
+      try { await api("POST", "/api/kernel/fetch"); await loadHost(); }
+      catch (err) { b.textContent = err.message; }
+    };
+  } else b.hidden = true;
+}
+$("#image").addEventListener("input", () => { clearTimeout(inspectTimer); inspectTimer = setTimeout(inspect, 350); });
+createForm.elements.name.addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
+createForm.elements.legacy.addEventListener("change", (e) => { e.target.dataset.touched = "1"; });
+$("#browse").addEventListener("click", async (e) => {
+  const b = e.target; b.disabled = true; b.textContent = "Choose a file…";
+  try {
+    const r = await api("POST", "/api/pick");
+    if (r.path) setImage(r.path, r.info);
+  } catch (err) { showInfo({ ok: false, message: err.message }); }
+  b.disabled = false; b.textContent = "Browse…";
+});
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === t));
+  document.querySelectorAll(".pane").forEach(p => p.hidden = p.id !== "tab-" + t.dataset.tab);
+}));
+document.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => setImage(c.dataset.img)));
+async function loadFound() {
+  try {
+    const items = await api("POST", "/api/scan");
+    $("#found").innerHTML = items.length ? items.map(f => `
+      <button type="button" class="item" data-img="${esc(f.path)}">
+        <span class="n">${esc(f.name)}</span><span class="s">${esc(f.kind)} · ${size(f.size_mib)}</span>
+        <span class="p">${esc(f.path)}</span></button>`).join("")
+      : `<div class="empty">No images found in the usual folders. Use <b>Browse…</b> to pick one anywhere.</div>`;
+    document.querySelectorAll("#found .item").forEach(i => i.addEventListener("click", () => setImage(i.dataset.img)));
+  } catch (err) { $("#found").textContent = err.message; }
+}
+createForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const f = new FormData(e.target), msg = $("#createMsg");
-  msg.className = "msg"; msg.textContent = "Creating… (pulling an image can take a minute)";
+  const f = new FormData(createForm), msg = $("#createMsg"), btn = $("#createBtn");
+  const image = $("#image").value.trim();
+  if (!image) { msg.className = "msg err"; msg.textContent = "Choose an image first (step 1)."; return; }
+  msg.className = "msg"; msg.textContent = CHOSEN && CHOSEN.remote ? "Downloading the image and creating…" : "Creating…";
+  btn.disabled = true;
   try {
     const r = await api("POST", "/api/vms", {
-      name: f.get("name"), image: f.get("image"), preset: f.get("preset"), memory: f.get("memory"),
+      name: f.get("name"), image, preset: f.get("preset"), memory: f.get("memory"),
+      disk_size: $("#diskField").hidden ? "" : f.get("disk_size"),
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
-      legacy_devices: f.get("legacy") === "on" });
-    msg.textContent = [...r.log, `Created ${r.name}.`].join("\n"); e.target.reset(); loadVms();
+      legacy_devices: f.get("legacy") === "on", start: f.get("start") === "on" });
+    msg.textContent = [...r.log, r.started ? `${r.name} is running.` : `Created ${r.name}.`].join("\n");
+    createForm.reset(); delete createForm.elements.name.dataset.touched; delete createForm.elements.legacy.dataset.touched;
+    setImage(""); loadVms();
   } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+  btn.disabled = false;
 });
 loadHost().catch(e => $("#checks").textContent = e.message);
 loadVms();
+loadFound();
 setInterval(loadVms, 4000);
 </script>
 </body>

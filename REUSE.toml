@@ -12,6 +12,8 @@ SPDX-License-Identifier = "GPL-3.0-or-later OR LGPL-3.0-or-later"
 
 [[annotations]]
 path = [
+  "docs/screenshots/choose-container.png",
+  "docs/screenshots/choose-image.png",
   "docs/screenshots/cli-doctor.png",
   "docs/screenshots/cli-list.png",
   "docs/screenshots/cli-presets.png",
