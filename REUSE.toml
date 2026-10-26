@@ -6,7 +6,7 @@ path = [
   ".gitignore",
   "Cargo.lock",
 ]
-precedence = "closest"
+precedence = "override"
 SPDX-FileCopyrightText = ["2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors"]
 SPDX-License-Identifier = "GPL-3.0-or-later OR LGPL-3.0-or-later"
 
@@ -21,8 +21,10 @@ path = [
   "docs/screenshots/dashboard-dark.png",
   "docs/screenshots/dashboard-light.png",
   "docs/screenshots/dashboard-mobile.png",
+  "docs/screenshots/machines-storage.png",
+  "docs/screenshots/vm-storage.png",
 ]
-precedence = "closest"
+precedence = "override"
 SPDX-FileCopyrightText = ["2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors"]
 SPDX-License-Identifier = "CC-BY-SA-4.0"
 

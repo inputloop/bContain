@@ -20,7 +20,7 @@ tar = "0.4"
 flate2 = "1"
 bzip2 = "0.6"
 sha2 = "0.10"
-sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system", "disk"] }
 tiny_http = "0.12"
 ureq = { version = "2", features = ["json"] }
 dirs = "5"

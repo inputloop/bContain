@@ -249,6 +249,30 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
             let info = path.as_deref().map(inspect);
             Ok(Reply::Json(json!({ "path": path, "info": info })))
         }
+        (Method::Post, ["api", "pick-folder"]) => {
+            let path = crate::desktop::pick_folder().map_err(bad)?;
+            Ok(Reply::Json(json!({ "path": path })))
+        }
+        // Free space on the drive a VM's disks would go to ("" = the default).
+        (Method::Post, ["api", "space"]) => {
+            let body: InspectBody = read_json(req)?;
+            let path = body.image.trim();
+            let target = if path.is_empty() {
+                store::data_dir().join("vms")
+            } else {
+                std::path::PathBuf::from(path)
+            };
+            Ok(Reply::Json(match store::free_space(&target) {
+                Some((free, total, drive)) => json!({
+                    "ok": true,
+                    "default": store::data_dir().join("vms").display().to_string(),
+                    "drive": drive.display().to_string(),
+                    "free_mib": free >> 20,
+                    "total_mib": total >> 20,
+                }),
+                None => json!({ "ok": false }),
+            }))
+        }
         (Method::Post, ["api", "scan"]) => Ok(Reply::Json(json!(crate::desktop::scan()))),
         (Method::Post, ["api", "inspect"]) => {
             let body: InspectBody = read_json(req)?;
@@ -294,6 +318,12 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
                 windows: body.windows,
+                storage: body
+                    .storage
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(std::path::PathBuf::from),
                 gpu: body.gpu,
                 engine: body.engine.filter(|e| !e.is_empty()),
                 accel_mode: body.accel_mode,
@@ -370,6 +400,8 @@ struct CreateBody {
     legacy_devices: bool,
     #[serde(default)]
     windows: bool,
+    #[serde(default)]
+    storage: Option<String>,
     disk_size: Option<String>,
     #[serde(default)]
     start: bool,

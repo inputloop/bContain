@@ -56,9 +56,14 @@ enum Cmd {
         image: String,
         #[command(flatten)]
         tune: Tune,
-        /// Size of the blank disk created next to an ISO (e.g. 64G; 0 for none).
+        /// Size of the new system disk for ISO installers, Windows and SteamOS
+        /// (e.g. 64G, 256G, 1T; 0 for none next to a plain ISO).
         #[arg(long)]
         disk_size: Option<String>,
+        /// Folder for the VM's disks, on any drive (e.g. D:\VMs). bContain
+        /// makes a subfolder named after the VM there.
+        #[arg(long)]
+        storage: Option<PathBuf>,
         /// Command to run instead of the image's default (containers).
         #[arg(last = true)]
         command: Vec<String>,
@@ -250,6 +255,7 @@ impl Tune {
             }),
             legacy_devices: self.legacy_devices,
             windows: self.windows,
+            storage: None,
             ephemeral: false,
             ports: self
                 .ports
@@ -318,12 +324,14 @@ fn real_main() -> Result<()> {
             image,
             tune,
             disk_size,
+            storage,
             command,
         } => {
             let host = Host::detect();
             let mut opts = tune.into_options(name, image)?;
             opts.command = command;
             opts.disk_mib = disk_size.as_deref().map(ops::parse_mib).transpose()?;
+            opts.storage = storage;
             let rec = ops::create(&opts, &host, true, &mut say)?;
             println!(
                 "created `{}`: {} vCPU, {} MiB, {:?} display (preset {})",

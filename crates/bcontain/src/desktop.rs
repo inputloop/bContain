@@ -146,6 +146,52 @@ pub fn pick_file() -> Result<Option<String>> {
     }
 }
 
+/// Show the OS "choose folder" dialog. `Ok(None)` means the user cancelled.
+pub fn pick_folder() -> Result<Option<String>> {
+    #[cfg(windows)]
+    {
+        let script = "[Console]::OutputEncoding=[Text.Encoding]::UTF8;\
+            Add-Type -AssemblyName System.Windows.Forms;\
+            $o=New-Object System.Windows.Forms.Form -Property @{TopMost=$true};\
+            $d=New-Object System.Windows.Forms.FolderBrowserDialog;\
+            $d.Description='Choose where to keep this VM''s disks';\
+            $d.ShowNewFolderButton=$true;\
+            if($d.ShowDialog($o) -eq 'OK'){$d.SelectedPath}";
+        let out =
+            helper(Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]))
+                .output()?;
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Ok((!path.is_empty()).then_some(path))
+    }
+    #[cfg(not(windows))]
+    {
+        let home = home().display().to_string();
+        let attempts: [(&str, Vec<&str>); 2] = [
+            (
+                "zenity",
+                vec![
+                    "--file-selection",
+                    "--directory",
+                    "--title=Choose where to keep this VM's disks",
+                ],
+            ),
+            ("kdialog", vec!["--getexistingdirectory", &home]),
+        ];
+        for (exe, args) in attempts {
+            match helper(Command::new(exe).args(&args)).output() {
+                Ok(out) => {
+                    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    return Ok((out.status.success() && !path.is_empty()).then_some(path));
+                }
+                Err(_) => continue,
+            }
+        }
+        anyhow::bail!(
+            "no folder dialog available: install zenity (GNOME) or kdialog (KDE), or type the path"
+        )
+    }
+}
+
 #[derive(Serialize)]
 pub struct Found {
     pub path: String,

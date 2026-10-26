@@ -58,14 +58,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .hvLog { margin-top: 6px; max-height: 160px; font-size: 11px; }
 .crash { color: var(--bad); font-size: 12px; max-width: 260px; overflow-wrap: anywhere; margin-top: 2px; }
 .kind { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); }
-.src { color: var(--muted); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src { color: var(--muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
   padding: 5px 11px; border-radius: 7px; cursor: pointer; }
 button:hover { border-color: var(--muted); }
 button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 650; }
 button.danger { color: var(--bad); }
 button:disabled { opacity: .45; cursor: default; }
-.actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: nowrap; }
+.actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+.vmtable .actions { min-width: 180px; }
+.vmtable .accelSel { max-width: 130px; }
+.vmtable .actions button { padding: 4px 8px; }
+.vmtable td.vmname { min-width: 130px; overflow-wrap: anywhere; }
 form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; align-items: end; }
 label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 input, select { font: inherit; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line);
@@ -74,6 +78,11 @@ label.wide { grid-column: 1 / -1; }
 .checkbox { display: flex; gap: 6px; align-items: center; color: var(--ink); font-size: 13px; }
 .msg { margin-top: 10px; font-size: 13px; white-space: pre-wrap; }
 .msg.err { color: var(--bad); }
+.pathrow { display: flex; gap: 6px; }
+.pathrow input { flex: 1; }
+.space { font-size: 12px; color: var(--muted); }
+.where { font-size: 11px; }
+.space.err { color: var(--bad); }
 pre { background: var(--code); border-radius: 8px; padding: 12px; max-height: 320px; overflow: auto;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; margin: 0; white-space: pre-wrap; }
 .empty { color: var(--muted); padding: 18px 6px; }
@@ -194,7 +203,7 @@ button.big { padding: 9px 18px; }
         </label>
         <label>vCPUs <input name="cpus" type="number" min="1" max="64" placeholder="from preset"></label>
         <label>Memory <input name="memory" placeholder="from preset, e.g. 16G"></label>
-        <label id="diskField" hidden>New disk size <input name="disk_size" value="64G"></label>
+        <label id="diskField" hidden>New disk size <input name="disk_size" value="64G" title="The most the disk can grow to, e.g. 64G, 256G or 1T. It starts small and grows as the VM writes."></label>
         <label>Ports <input name="ports" placeholder="host:guest, e.g. 8080:80"></label>
         <label id="accelField">Acceleration
           <select name="accel_mode" title="If a VM shows nothing or crashes, try another mode">
@@ -203,6 +212,10 @@ button.big { padding: 9px 18px; }
             <option value="software">software (slow)</option>
           </select>
         </label>
+        <label class="wide" id="storageField" hidden>Keep this VM's disks in
+          <span class="pathrow"><input name="storage" placeholder="bContain's own folder (click Browse… to use another drive or folder)">
+          <button type="button" id="pickFolder">Browse…</button></span>
+          <span class="space" id="spaceInfo"></span></label>
         <label class="checkbox wide"><input type="checkbox" name="legacy"> Windows 10/11 guest (UEFI, NVMe disk, e1000e network; skips Windows 11's TPM check)</label>
         <label class="checkbox wide" id="gpuField" hidden><input type="checkbox" name="gpu"> Give the GPU to this VM for gaming (Linux host; the picture appears on the GPU's own output)</label>
         <label class="checkbox wide" id="nativeField" hidden><input type="checkbox" name="native"> Run on bContain's own hypervisor (experimental: 1 vCPU, no network yet)</label>
@@ -275,7 +288,7 @@ async function loadVms() {
   $("#vms").innerHTML = vms.map(v => {
     const run = v.state === "running";
     return `<tr>
-      <td style="overflow-wrap:anywhere"><b>${esc(v.name)}</b></td>
+      <td class="vmname"><b>${esc(v.name)}</b></td>
       <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span>
         ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
       <td><span class="kind">${esc(v.kind)}</span>
@@ -283,7 +296,7 @@ async function loadVms() {
           ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility (classic PC)", software: "software (slow)"}[m]}</option>`).join("")}
         </select>` : ""}</td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
-      <td class="src" title="${esc(v.source)}">${esc(v.source)}</td>
+      <td class="src" title="${esc(v.source)}&#10;Disks in ${esc(v.storage)}">${esc(v.source)}<br><span class="where">disks: ${esc(v.storage)}</span></td>
       <td><div class="actions">
         <button class="primary" data-act="start" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Start</button>
         <button data-act="stop" data-n="${esc(v.name)}" ${run ? "" : "disabled"}>Stop</button>
@@ -341,12 +354,16 @@ function showInfo(i) {
   CHOSEN = i.ok ? i : null;
   const el = $("#imageInfo");
   el.className = "info" + (i.ok || !i.message ? "" : " err");
-  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#nativeField").hidden = true; updateBanner(); return; }
+  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#storageField").hidden = true; $("#nativeField").hidden = true; updateBanner(); return; }
   el.innerHTML = `<span class="tag">✔ ${esc(i.kind)}</span>` + (i.size_mib ? ` · ${size(i.size_mib)}` : "") +
     (i.remote ? " · downloaded when you create it" : "");
   const name = createForm.elements.name;
   if (!name.dataset.touched) name.value = i.name || "";
   $("#diskField").hidden = !i.iso;
+  $("#storageField").hidden = !i.iso;
+  if (i.iso && !i.gaming && !createForm.elements.disk_size.dataset.touched)
+    createForm.elements.disk_size.value = i.windows ? "128G" : "64G";
+  if (i.iso) updateSpace();
   $("#nativeField").hidden = !(i.container && HOST && HOST.native && HOST.native.usable);
   $("#gpuField").hidden = !(HOST && HOST.gpu && HOST.gpu.linux) || !!i.container;
   if (i.gaming) {
@@ -391,6 +408,35 @@ async function installKernel(btn) {
 $("#image").addEventListener("input", () => { clearTimeout(inspectTimer); inspectTimer = setTimeout(inspect, 350); });
 createForm.elements.name.addEventListener("input", (e) => { e.target.dataset.touched = "1"; });
 createForm.elements.legacy.addEventListener("change", (e) => { e.target.dataset.touched = "1"; });
+createForm.elements.disk_size.addEventListener("input", (e) => { e.target.dataset.touched = "1"; updateSpace(); });
+// Where the disks go, and how much room that drive has.
+function sizeToMib(s) {
+  const m = /^\s*(\d+(?:\.\d+)?)\s*([MGT]?)i?B?\s*$/i.exec(s || ""); if (!m) return 0;
+  return Number(m[1]) * ({ "": 1, M: 1, G: 1024, T: 1024 * 1024 })[m[2].toUpperCase()];
+}
+let spaceTimer;
+function updateSpace() {
+  clearTimeout(spaceTimer);
+  spaceTimer = setTimeout(async () => {
+    const el = $("#spaceInfo"), want = sizeToMib(createForm.elements.disk_size.value);
+    try {
+      const r = await api("POST", "/api/space", { image: createForm.elements.storage.value });
+      if (!r.ok) { el.className = "space err"; el.textContent = "That drive could not be read."; return; }
+      const where = createForm.elements.storage.value.trim() ? "" : `Default: ${r.default}. `;
+      el.className = "space" + (want > r.free_mib ? " err" : "");
+      el.textContent = `${where}${r.drive} has ${size(r.free_mib)} free of ${size(r.total_mib)}.` +
+        (want > r.free_mib ? ` The disk can grow to ${size(want)}: choose a bigger drive or a smaller disk.` :
+         want ? ` The disk starts small and grows up to ${size(want)}.` : "");
+    } catch (err) { el.className = "space err"; el.textContent = err.message; }
+  }, 250);
+}
+createForm.elements.storage.addEventListener("input", updateSpace);
+$("#pickFolder").addEventListener("click", async (e) => {
+  const b = e.target; b.disabled = true;
+  try { const r = await api("POST", "/api/pick-folder"); if (r.path) { createForm.elements.storage.value = r.path; updateSpace(); } }
+  catch (err) { alert(err.message); }
+  b.disabled = false;
+});
 $("#browse").addEventListener("click", async (e) => {
   const b = e.target; b.disabled = true; b.textContent = "Choose a file…";
   try {
@@ -427,6 +473,7 @@ createForm.addEventListener("submit", async (e) => {
       name: f.get("name"), image, preset: f.get("preset"), memory: f.get("memory"),
       cpus: f.get("cpus") ? Number(f.get("cpus")) : null,
       disk_size: $("#diskField").hidden ? "" : f.get("disk_size"),
+      storage: $("#storageField").hidden ? "" : f.get("storage"),
       ports: String(f.get("ports") || "").split(",").map(s => s.trim()).filter(Boolean),
       legacy_devices: f.get("legacy") === "on", windows: f.get("legacy") === "on", start: f.get("start") === "on",
       accel_mode: f.get("accel_mode") || "auto",
@@ -434,6 +481,7 @@ createForm.addEventListener("submit", async (e) => {
       engine: !$("#nativeField").hidden && f.get("native") === "on" ? "native" : "" });
     msg.textContent = [...r.log, r.started ? `${r.name} is running.` : `Created ${r.name}.`].join("\n");
     createForm.reset(); delete createForm.elements.name.dataset.touched; delete createForm.elements.legacy.dataset.touched;
+    delete createForm.elements.disk_size.dataset.touched;
     setImage(""); loadVms();
   } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
   btn.disabled = false;

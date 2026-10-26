@@ -30,6 +30,44 @@ pub struct VmRecord {
     pub created: u64,
     /// Image the VM was created from, for display.
     pub source: String,
+    /// The folder holding this VM's disks, when it is not the VM's own
+    /// folder under the data directory (another drive, say).
+    #[serde(default)]
+    pub storage: Option<PathBuf>,
+}
+
+/// Files bContain creates in a VM's storage folder; removing a VM deletes
+/// these and nothing else there.
+pub const STORAGE_FILES: [&str; 4] = [
+    "disk.qcow2",
+    "windows.qcow2",
+    "steamos-nvme.qcow2",
+    "autounattend.iso",
+];
+
+/// Free and total bytes on the drive holding `path` (or the nearest
+/// existing folder above it), with the drive's mount point.
+pub fn free_space(path: &Path) -> Option<(u64, u64, PathBuf)> {
+    let mut p = path;
+    while !p.exists() {
+        p = p.parent()?;
+    }
+    let full = fs::canonicalize(p).ok()?;
+    // Windows' canonical paths start with \\?\; mount points do not.
+    let full = PathBuf::from(full.to_string_lossy().trim_start_matches(r"\\?\"));
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    disks
+        .list()
+        .iter()
+        .filter(|d| full.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len())
+        .map(|d| {
+            (
+                d.available_space(),
+                d.total_space(),
+                d.mount_point().to_path_buf(),
+            )
+        })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

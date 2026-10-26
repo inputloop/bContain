@@ -45,6 +45,9 @@ pub struct CreateOptions {
     pub gpu: bool,
     /// The ISO installs Windows 10/11 (also detected from the disc itself).
     pub windows: bool,
+    /// Put the VM's disks in `<storage>/<name>` (any drive) instead of the
+    /// VM's folder in the data directory.
+    pub storage: Option<PathBuf>,
 }
 
 /// What `image` resolved to.
@@ -212,6 +215,22 @@ pub fn create(
     fs::create_dir_all(&dir)?;
     // Remove the half-made folder (disk, initramfs) if anything below fails.
     let mut cleanup = DirGuard(Some(dir.clone()));
+    let disks_dir = match &opts.storage {
+        Some(parent) if persist => {
+            if !parent.is_absolute() {
+                bail!("the storage folder must be a full path, e.g. D:\\VMs");
+            }
+            let d = parent.join(&opts.name);
+            if d.exists() && fs::read_dir(&d)?.next().is_some() {
+                bail!("{} already exists and is not empty", d.display());
+            }
+            fs::create_dir_all(&d).with_context(|| format!("creating {}", d.display()))?;
+            d
+        }
+        _ => dir.clone(),
+    };
+    let custom_storage = disks_dir != dir;
+    let mut storage_cleanup = DirGuard(custom_storage.then(|| disks_dir.clone()));
 
     let mut spec = VmSpec {
         name: opts.name.clone(),
@@ -261,7 +280,8 @@ pub fn create(
             let size = opts
                 .disk_mib
                 .unwrap_or(if opts.gpu { 256 * 1024 } else { 128 * 1024 });
-            let disk = dir.join("steamos-nvme.qcow2");
+            let disk = disks_dir.join("steamos-nvme.qcow2");
+            report_space(&disks_dir, size, log);
             log(format!("creating {} GiB NVMe disk", size / 1024));
             qemu_img_create(&disk, size)?;
             spec.disks.push(Disk {
@@ -302,7 +322,8 @@ pub fn create(
                 spec.memory_mib = spec.memory_mib.max(8 * 1024);
             }
             let size = opts.disk_mib.filter(|&s| s > 0).unwrap_or(128 * 1024);
-            let disk = dir.join("windows.qcow2");
+            let disk = disks_dir.join("windows.qcow2");
+            report_space(&disks_dir, size, log);
             log(format!("creating {} GiB NVMe system disk", size / 1024));
             qemu_img_create(&disk, size)?;
             spec.disks.push(Disk {
@@ -321,7 +342,7 @@ pub fn create(
                 bus: DiskBus::Auto,
                 installer: true,
             });
-            let answers = crate::windows::answer_iso(&dir)?;
+            let answers = crate::windows::answer_iso(&disks_dir)?;
             spec.disks.push(Disk {
                 path: answers,
                 format: DiskFormat::Iso,
@@ -369,7 +390,8 @@ pub fn create(
             if cdrom {
                 let size = opts.disk_mib.unwrap_or(if persist { 64 * 1024 } else { 0 });
                 if size > 0 {
-                    let disk = dir.join("disk.qcow2");
+                    let disk = disks_dir.join("disk.qcow2");
+                    report_space(&disks_dir, size, log);
                     log(format!(
                         "creating {} GiB disk {}",
                         size / 1024,
@@ -486,12 +508,36 @@ pub fn create(
         backend: engine,
         created: store::now(),
         source: opts.image.clone(),
+        storage: custom_storage.then_some(disks_dir),
     };
     if persist {
         store::save(&rec)?;
     }
     cleanup.0 = None;
+    storage_cleanup.0 = None;
     Ok(rec)
+}
+
+/// Say where a new disk goes and how much room that drive has. Disks are
+/// thin (qcow2): they start small and grow up to `size_mib` as the guest
+/// writes, so a tight drive is a warning rather than an error.
+fn report_space(dir: &Path, size_mib: u64, log: &mut dyn FnMut(String)) {
+    log(format!("disk folder: {}", dir.display()));
+    if let Some((free, total, drive)) = store::free_space(dir) {
+        let gib = |b: u64| b as f64 / (1u64 << 30) as f64;
+        log(format!(
+            "  {} has {:.0} GiB free of {:.0} GiB",
+            drive.display(),
+            gib(free),
+            gib(total)
+        ));
+        if free / (1 << 20) < size_mib {
+            log(format!(
+                "  warning: the disk can grow to {} GiB, more than is free there",
+                size_mib / 1024
+            ));
+        }
+    }
 }
 
 struct DirGuard(Option<PathBuf>);
@@ -696,7 +742,16 @@ pub fn remove(name: &str, force: bool) -> Result<()> {
         }
         hv.stop(&r, true)?;
     }
-    // Only bContain's own folder is deleted; the source image is left alone.
+    // Only what bContain created is deleted; the source image is left alone.
+    if let Some(dir) = &rec.storage {
+        for f in store::STORAGE_FILES {
+            let p = dir.join(f);
+            if p.exists() {
+                fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
+            }
+        }
+        let _ = fs::remove_dir(dir); // only if now empty
+    }
     store::remove(name)
 }
 
@@ -717,6 +772,8 @@ pub struct VmView {
     pub accel_mode: crate::engine::AccelMode,
     /// An ISO or installer disk is still attached (offer "Eject installer").
     pub installer: bool,
+    /// Where the VM's disks live.
+    pub storage: PathBuf,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -730,6 +787,10 @@ pub fn views() -> Result<Vec<VmView>> {
             (r, state)
         })
         .map(|(r, state)| VmView {
+            storage: r
+                .storage
+                .clone()
+                .unwrap_or_else(|| store::vm_dir(&r.spec.name)),
             accel_mode: r.spec.accel_mode,
             installer: r.spec.disks.iter().any(|d| d.cdrom || d.installer),
             last_error: (state == store::State::Stopped)

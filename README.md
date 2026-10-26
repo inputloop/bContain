@@ -59,6 +59,34 @@ enabling the Windows feature below once.
 > shows the fixes it would suggest. On the reference laptop those rows are
 > green.
 
+## Disk size and location, per VM
+
+When you add an ISO installer, a Windows ISO or a SteamOS image, two
+settings decide where its new disk goes and how big it can get:
+
+- **New disk size**: the most the disk can grow to, e.g. `64G`, `256G` or
+  `1T`. Disks are thin qcow2 files: they start at a few hundred KiB and grow
+  as the guest writes. Defaults: 64G, 128G for Windows and SteamOS, 256G for
+  SteamOS with a passed-through GPU.
+- **Keep this VM's disks in**: any folder on any drive (**Browse…** opens a
+  folder picker). bContain makes a subfolder named after the VM there, e.g.
+  `D:\VMs\win11`. Leave it empty to use bContain's own folder
+  (`%LOCALAPPDATA%\bcontain\vms` or `~/.local/share/bcontain/vms`).
+
+Under the folder field, the app shows the free space on that drive and
+turns red if the disk could outgrow it. The Machines list shows each VM's
+disk folder under its source. Deleting a VM removes only the files bContain
+made there (`windows.qcow2`, `disk.qcow2`, `steamos-nvme.qcow2`,
+`autounattend.iso`) and the subfolder if that leaves it empty. The VM's
+settings and log stay in bContain's own folder.
+
+From the command line: `bcontain create win11 Win11.iso --disk-size 256G
+--storage D:\VMs`.
+
+| Size and folder when adding a VM | Each VM's disk folder in the list |
+|---|---|
+| ![Disk size and folder](docs/screenshots/vm-storage.png) | ![Machines list](docs/screenshots/machines-storage.png) |
+
 ## Windows 10 and 11
 
 Pick a Windows ISO from Microsoft (for example `Win11_24H2_English_x64.iso`)
@@ -316,6 +344,7 @@ line.
 Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--gpu`, `--preset`, `--cpus`, `--memory 16G`,
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`, `--windows`,
 `-p HOST:GUEST[/udp]`, `-e KEY=VALUE`, `--kernel`.
+`create` also takes `--disk-size SIZE` and `--storage FOLDER`.
 
 ## How containers run
 
