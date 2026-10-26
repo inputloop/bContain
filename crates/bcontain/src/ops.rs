@@ -282,16 +282,26 @@ pub struct VmView {
     pub kind: &'static str,
     pub source: String,
     pub ports: Vec<PortForward>,
+    /// For a stopped VM whose backend log ends in an error: that error, so
+    /// the app can say why it stopped instead of it just vanishing.
+    pub last_error: Option<String>,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
     let hv = engine::backend("qemu").ok();
     Ok(store::list()?
         .into_iter()
-        .map(|r| VmView {
-            state: hv.as_ref().map_or(store::State::Stopped, |h| {
+        .map(|r| {
+            let state = hv.as_ref().map_or(store::State::Stopped, |h| {
                 store::state(&r.spec.name, h.as_ref())
-            }),
+            });
+            (r, state)
+        })
+        .map(|(r, state)| VmView {
+            last_error: (state == store::State::Stopped)
+                .then(|| last_error(&store::log_path(&r.spec.name)))
+                .flatten(),
+            state,
             name: r.spec.name.clone(),
             preset: r.preset,
             cpus: r.spec.cpus,
@@ -306,6 +316,25 @@ pub fn views() -> Result<Vec<VmView>> {
             ports: r.spec.ports,
         })
         .collect())
+}
+
+/// The error a crashed backend left at the end of its log, if any.
+fn last_error(log: &Path) -> Option<String> {
+    let text = fs::read_to_string(log).ok()?;
+    let tail: Vec<&str> = text.lines().rev().take(12).collect();
+    tail.into_iter()
+        .rev()
+        .filter(|l| {
+            let l = l.to_lowercase();
+            l.contains("qemu-system")
+                || l.contains("whpx")
+                || l.contains("error")
+                || l.contains("abort")
+                || l.contains("assertion")
+                || l.contains("failed")
+        })
+        .find(|l| !l.starts_with('#'))
+        .map(|l| l.trim().chars().take(300).collect())
 }
 
 /// Download a container-ready kernel from an OCI image that carries `/kernel`
@@ -392,6 +421,18 @@ pub fn parse_port(s: &str) -> Result<PortForward> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_crash_reason() {
+        let p = std::env::temp_dir().join(format!("bcontain-log-{}", std::process::id()));
+        fs::write(&p, "# qemu-system-x86_64 -name t\nSeaBIOS\nqemu-system-x86_64: WHPX: Unexpected VP exit code 4\n").unwrap();
+        assert_eq!(
+            last_error(&p).unwrap(),
+            "qemu-system-x86_64: WHPX: Unexpected VP exit code 4"
+        );
+        fs::write(&p, "# qemu-system-x86_64 -name t\nbooted fine\n").unwrap();
+        assert!(last_error(&p).is_none());
+    }
 
     #[test]
     fn sizes() {

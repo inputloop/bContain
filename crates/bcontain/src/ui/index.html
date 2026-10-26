@@ -53,6 +53,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .running .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .kernelBtn { margin-top: 6px; }
+.crash { color: var(--bad); font-size: 12px; max-width: 260px; overflow-wrap: anywhere; margin-top: 2px; }
 .kind { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--chip); color: var(--muted); }
 .src { color: var(--muted); max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
@@ -246,7 +247,8 @@ async function loadVms() {
     const run = v.state === "running";
     return `<tr>
       <td style="overflow-wrap:anywhere"><b>${esc(v.name)}</b></td>
-      <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span></td>
+      <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span>
+        ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
       <td><span class="kind">${esc(v.kind)}</span></td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
       <td class="src" title="${esc(v.source)}">${esc(v.source)}</td>

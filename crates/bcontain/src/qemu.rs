@@ -102,8 +102,11 @@ impl Qemu {
         };
         push(&["-machine", machine]);
         match self.accel {
-            // WHPX's in-kernel irqchip is unreliable across Windows builds.
-            Accel::Whp => push(&["-accel", "whpx,kernel-irqchip=off", "-cpu", "max"]),
+            // Leave kernel-irqchip to QEMU: it uses Hyper-V's own APIC when
+            // Windows offers it. Forcing it off moves interrupts into QEMU's
+            // userspace path, which aborts the VM on some guests (seen with
+            // Tiny Core).
+            Accel::Whp => push(&["-accel", "whpx", "-cpu", "max"]),
             Accel::Kvm => push(&["-accel", "kvm", "-cpu", "host"]),
             Accel::None => push(&["-accel", "tcg,thread=multi", "-cpu", "max"]),
         }
@@ -518,7 +521,8 @@ mod tests {
         s.legacy_devices = true;
         s.display = Display::Headless;
         let a = q.args(&s, true).unwrap().join(" ");
-        assert!(a.contains("whpx,kernel-irqchip=off"));
+        assert!(a.contains("-accel whpx -cpu max"));
+        assert!(!a.contains("kernel-irqchip"));
         assert!(a.contains("ide-hd,drive=disk0"));
         assert!(a.contains("e1000e"));
         assert!(a.contains("-serial mon:stdio"));

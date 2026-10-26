@@ -188,8 +188,10 @@ folder next to the binary takes priority, as on Windows.
 - **Hugepages (Linux):** `sudo sysctl vm.nr_hugepages=8192` reserves 16 GiB.
   bContain then backs guest RAM with hugepages automatically, and only when
   the pool can hold the guest.
-- **CPU:** `-cpu host` under KVM, and `-cpu max` under WHPX
-  (with `kernel-irqchip=off` for stability across Windows builds).
+- **CPU:** `-cpu host` under KVM, and `-cpu max` under WHPX. On WHPX,
+  bContain lets QEMU use Hyper-V's own interrupt controller (APIC). Earlier
+  versions forced `kernel-irqchip=off`, which moved interrupts into QEMU's
+  userspace path, and that path aborts some guests (Tiny Core crashed).
 - **Windows guests:** use `--legacy-devices` (SATA disk + e1000e NIC) for stock
   Windows installers, which ship without virtio drivers.
 
