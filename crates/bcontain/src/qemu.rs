@@ -145,7 +145,7 @@ impl Qemu {
             // Hyper-V enlightenments: Windows then uses KVM's paravirtual
             // clock, timers and spinlocks instead of polling emulated hardware.
             (Accel::Kvm, false) if windows => {
-                "host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_vpindex,hv_runtime,hv_time,hv_synic,hv_stimer,hv_frequencies"
+                "host,hv_relaxed,hv_vapic,hv_spinlocks=0x1fff,hv_vpindex,hv_runtime,hv_time,hv_synic,hv_stimer,hv_frequencies,hv_tlbflush,hv_ipi"
             }
             (Accel::Kvm, false) => "host",
             _ => "max",
@@ -207,6 +207,9 @@ impl Qemu {
         let has_installer = spec.disks.iter().any(|d| d.installer);
         let mut next_boot = 1;
         let mut usb_controller = false;
+        // virtio disks get their own I/O thread, so disk requests are not
+        // queued behind the vCPUs on QEMU's main loop.
+        let mut iothread = false;
         // Place every IDE/SATA drive explicitly: q35's AHCI controller has
         // six ports with one drive each; the i440FX has two IDE buses with
         // two units each (QEMU's own placement fails at the third drive).
@@ -257,7 +260,13 @@ impl Qemu {
                     ide_bus(&mut dev);
                     dev
                 }
-                DiskBus::Auto => format!("virtio-blk-pci,drive=disk{i}"),
+                DiskBus::Auto => {
+                    if !iothread {
+                        push(&["-object", "iothread,id=io0"]);
+                        iothread = true;
+                    }
+                    format!("virtio-blk-pci,drive=disk{i},iothread=io0")
+                }
             };
             if has_installer {
                 let index = if d.installer { 0 } else { next_boot };
@@ -346,7 +355,11 @@ impl Qemu {
             use std::os::windows::process::CommandExt;
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            // The VM keeps its CPU time while the laptop does other work.
+            const ABOVE_NORMAL_PRIORITY_CLASS: u32 = 0x0000_8000;
+            cmd.creation_flags(
+                CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | ABOVE_NORMAL_PRIORITY_CLASS,
+            );
         }
         cmd
     }
@@ -699,7 +712,8 @@ mod tests {
         assert!(a.contains("-smp 10,sockets=1,cores=10,threads=1"));
         assert!(a.contains("-m 16384M"));
         assert!(a.contains("file=/vm/a,,b.qcow2,format=qcow2"));
-        assert!(a.contains("-device virtio-blk-pci,drive=disk0"));
+        assert!(a.contains("-object iothread,id=io0"));
+        assert!(a.contains("-device virtio-blk-pci,drive=disk0,iothread=io0"));
         assert!(a.contains("-boot once=d"));
         assert!(a.contains("hostfwd=tcp:127.0.0.1:8080-:80,hostfwd=udp:127.0.0.1:47998-:47998"));
         assert!(a.contains("virtio-vga-gl"));
@@ -774,6 +788,7 @@ mod tests {
         ];
         let a = q.args(&s, false).unwrap().join(" ");
         assert!(a.contains("-cpu host,hv_relaxed,"));
+        assert!(a.contains(",hv_tlbflush,hv_ipi"));
         assert!(a.contains("-rtc base=localtime"));
         assert!(a.contains("-machine q35,hpet=off"));
         assert!(a.contains("nvme,drive=disk0,serial=bcontain0,bootindex=1"));

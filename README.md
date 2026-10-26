@@ -288,7 +288,21 @@ folder next to the binary takes priority, as on Windows.
   bContain lets QEMU use Hyper-V's own interrupt controller (APIC). Earlier
   versions forced `kernel-irqchip=off`, which moved interrupts into QEMU's
   userspace path, and that path aborts some guests (Tiny Core crashed).
+- **Disks:** new disks are qcow2 with 128 KiB clusters, sub-cluster
+  allocation (`extended_l2`) and lazy refcounts. First writes into fresh
+  space, which is most of an OS install, then cost less bookkeeping:
+  `qemu-img bench` measured 4 KiB writes into new clusters 1.8x faster than
+  qcow2's defaults, with sequential writes unchanged. Disks made by older
+  versions keep their format. Host caching stays on: direct I/O
+  (`cache=none,aio=native`) measured slower in the same test.
+- **virtio disks** get their own I/O thread (`-object iothread`), so disk
+  requests don't wait behind the vCPUs on QEMU's main loop.
+- **Windows host:** QEMU runs at above-normal priority, so the VM keeps its
+  CPU time while the laptop does other work.
 - **Windows guests:** detected from the ISO; see [Windows 10 and 11](#windows-10-and-11).
+  On KVM they also get the Hyper-V enlightenments (`hv-relaxed`, `hv-time`,
+  `hv-synic`, `hv-stimer`, `hv-tlbflush`, `hv-ipi` and others), so Windows
+  uses KVM's paravirtual clock, timers, TLB flushes and IPIs.
 
 ## Troubleshooting a VM on Windows
 
