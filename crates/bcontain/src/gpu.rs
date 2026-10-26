@@ -409,7 +409,7 @@ pub fn dump_vbios(sys: &Sysfs, gpu: &str, out: &Path) -> Result<usize> {
     Ok(data.len())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
