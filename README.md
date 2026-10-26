@@ -278,9 +278,12 @@ What has been verified, and where:
     container with it.
   - The host-name and header guards on the local server reject forged
     requests.
+  - Real registry pulls: `alpine:3.20` pulled from Docker Hub, booted and
+    got its network address. The app's **Install** button pulled the
+    linuxkit 6.12.59 kernel, which then booted containers.
 - **Not yet verified on real hardware:**
   - On Windows: double-clicking, the Edge app window, the Windows "Open"
     dialog, WHPX, and `build-windows.cmd` with the bundling script it runs.
   - virgl on an NVIDIA GPU.
-  - Registry pulls: the sandbox's registry traffic was rate-limited or
-    blocked, though the auth handshake itself completed.
+  - DNS inside containers: the sandbox has no general DNS, so lookups
+    there fail.

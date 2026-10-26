@@ -441,9 +441,9 @@ fn doctor(json: bool) -> Result<()> {
         Err(e) => println!("  ✘ QEMU        {e:#}"),
     }
     match oci::find_kernel(None) {
-        Ok(k) => println!("  ✔ Kernel      {} (for containers)", k.display()),
+        Ok(k) => println!("  ✔ Containers  ready (kernel {})", k.display()),
         Err(_) => println!(
-            "  • Kernel      not installed; `bcontain kernel fetch` enables container images"
+            "  • Containers  optional kernel not installed (only for container images, not ISOs or disks): `bcontain kernel fetch` or Install in the app"
         ),
     }
     if host.hugepages_free_mib > 0 {
