@@ -55,6 +55,20 @@ be checked without it is:
   version over MMIO, prints it, and resets the machine. If any step fails,
   the test says which one.
 
+## Confirmed on real hardware
+
+- **2026-10-26, reference laptop** (i9-12900H, 31.8 GiB, RTX 3080 Ti Laptop,
+  Windows Hypervisor Platform, bContain's single-file build): the
+  `hypervisor-test` self test **passed**. The guest printed
+  `4f 4b 11 0a` ("OK", I/O APIC version 0x11, newline) and reset. That
+  confirms on WHP: partition setup, guest memory mapping, long-mode entry
+  (GDT, page tables, segment and control registers), port I/O exits through
+  Microsoft's instruction emulator, MMIO exits to bvmm's I/O APIC, and
+  reset handling.
+- Not yet confirmed: a Linux kernel boot (timers, Hyper-V enlightenments,
+  interrupts). The next test is a container with
+  `--engine native`.
+
 ## First run on Windows: what is most likely to need a fix
 
 These are the assumptions that could not be checked without WHP:
@@ -71,8 +85,9 @@ These are the assumptions that could not be checked without WHP:
 
 ## Next milestones
 
-1. Confirm `hypervisor-test` and a container boot on the reference laptop
-   (WHP) and on Linux (KVM, including WSL2 with nested virtualization).
+1. ~~`hypervisor-test` on the reference laptop (WHP)~~ passed. Next: a
+   container boot there, then KVM on Linux (including WSL2 with nested
+   virtualization).
 2. Network: virtio-net over virtio-mmio, with user-mode NAT.
 3. Several vCPUs (APs started with INIT/SIPI through the local APIC).
 4. Disks: virtio-blk.
