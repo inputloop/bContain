@@ -269,6 +269,7 @@ QEMU's window can show two placeholder messages:
 | The window says | What it means | Try |
 |---|---|---|
 | *Guest has not initialized the display (yet)* | Nothing has run, not even the BIOS. The virtual CPU is stuck at the very start. | Set the VM's **Acceleration** (dropdown in the Machines list) to **compatibility (classic PC)**, and/or give it **1 vCPU**. **software (slow)** always works, which tells us whether the hypervisor is the problem. |
+| *Display output is not active* | The guest turned its display off. | Fixed by making the basic display a standard VGA card; rebuild if you still see it. |
 | The guest boots, then freezes while reading its CD or disk | Disk interrupts are being lost (MSI on the SATA controller). | **compatibility (classic PC)**: it also swaps in the classic PC chipset with an IDE CD-ROM and disk on plain interrupt lines. |
 
 Confirmed on the reference laptop (i9-12900H, WHP, QEMU 11.1): Tiny Core
@@ -277,7 +278,15 @@ mode, and boots to its desktop in **compatibility (classic PC)** mode.
 With 10 vCPUs it later stopped with QEMU's *failed to get xsave state: No
 error*, a QEMU 11 WHPX problem. Compatibility mode now hides XSAVE and AVX
 from the guest, so QEMU never takes that path.
-| *Display output is not active* | The guest turned its display off. | Fixed by making the basic display a standard VGA card; rebuild if you still see it. |
+
+**Diagnose** (next to **Log**; `bcontain diagnose NAME` on the command
+line) finds the cause of *Guest has not initialized the display* for you. It
+boots the stopped VM about nine ways without a window: each acceleration
+mode, BIOS instead of UEFI, and without each piece of its hardware in turn
+(the answer disc, the CDs, the NVMe disk, the boot order, Windows' clock
+setting). For each one it screenshots the VM over QMP after 15 seconds
+(60 in software mode) and reports which ones reach the firmware's screen.
+It takes two to three minutes and changes nothing about the VM.
 
 If a VM stops with an error, the Machines list shows it in red under the
 VM, and **Log** shows QEMU's full output, starting with the exact command
@@ -300,6 +309,7 @@ line.
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
 | `gpu [status \| release NAME \| dump-vbios FILE \| set-rom NAME FILE]` | GPU passthrough: check this host, give a GPU back, save or attach a video BIOS |
 | `eject NAME` | Detach a VM's ISO or SteamOS installer so it boots what it installed |
+| `diagnose NAME` | Boot a stopped VM several ways without a window and report which reach the firmware's screen |
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
 

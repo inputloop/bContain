@@ -288,6 +288,7 @@ async function loadVms() {
         <button class="primary" data-act="start" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Start</button>
         <button data-act="stop" data-n="${esc(v.name)}" ${run ? "" : "disabled"}>Stop</button>
         <button data-act="log" data-n="${esc(v.name)}">Log</button>
+        <button data-act="diagnose" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Boot it several ways without a window to find what stops it before the firmware draws anything (2-3 minutes)">Diagnose</button>
         ${v.installer ? `<button data-act="eject" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Detach the ISO / installer so the VM boots what it installed">Eject installer</button>` : ""}
         <button class="danger" data-act="delete" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Delete</button>
       </div></td></tr>`;
@@ -304,6 +305,14 @@ $("#vms").addEventListener("click", async (e) => {
   const n = b.dataset.n, act = b.dataset.act;
   try {
     if (act === "log") return showLog(n);
+    if (act === "diagnose") {
+      $("#logCard").hidden = false; $("#logTitle").textContent = `Diagnose · ${n}`;
+      $("#log").textContent = "Booting the VM several ways without a window: 2-3 minutes…";
+      b.disabled = true;
+      try { $("#log").textContent = await api("POST", `/api/vms/${encodeURIComponent(n)}/diagnose`); }
+      catch (err) { $("#log").textContent = err.message; }
+      b.disabled = false; return;
+    }
     if (act === "delete") { if (!confirm(`Delete ${n}? Disks bContain created for it are removed; your source image is kept.`)) return;
       await api("DELETE", `/api/vms/${encodeURIComponent(n)}`); }
     else await api("POST", `/api/vms/${encodeURIComponent(n)}/${act}`);

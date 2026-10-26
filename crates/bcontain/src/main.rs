@@ -4,6 +4,7 @@
 //! tuned for RTX 3080 Ti / Core i9 / 32 GB laptops (or better).
 
 mod desktop;
+mod diagnose;
 mod engine;
 mod gpu;
 mod host;
@@ -122,6 +123,9 @@ enum Cmd {
     },
     /// Check that bContain's own hypervisor works on this machine, step by step.
     HypervisorTest,
+    /// Find what stops a VM before its firmware draws anything: boots it
+    /// several ways without a window and reports which ones get further.
+    Diagnose { name: String },
     /// Internal: run a VM on bContain's own hypervisor (used by `start`).
     #[command(name = "__native-run", hide = true)]
     NativeRun { name: String },
@@ -495,6 +499,7 @@ fn real_main() -> Result<()> {
         }
         Cmd::Kernel { cmd } => kernel(cmd),
         Cmd::Gpu { cmd } => gpu_cmd(cmd.unwrap_or(GpuCmd::Status)),
+        Cmd::Diagnose { name } => diagnose::run(&name, &mut |l| println!("{l}")),
         Cmd::HypervisorTest => {
             println!("Testing bContain's own hypervisor on this machine:");
             match bvmm::self_test(&mut |step| println!("  - {step}")) {

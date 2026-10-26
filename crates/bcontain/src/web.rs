@@ -319,6 +319,11 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                 json!({ "name": rec.spec.name, "log": lines, "started": started }),
             ))
         }
+        (Method::Post, ["api", "vms", name, "diagnose"]) => {
+            let mut lines = Vec::new();
+            crate::diagnose::run(name, &mut |l| lines.push(l)).map_err(bad)?;
+            Ok(Reply::Text(lines.join("\n")))
+        }
         (Method::Post, ["api", "vms", name, "eject"]) => {
             let n = ops::eject(name).map_err(bad)?;
             Ok(Reply::Json(json!({ "ok": true, "ejected": n })))

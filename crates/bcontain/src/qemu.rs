@@ -201,14 +201,17 @@ impl Qemu {
         let has_installer = spec.disks.iter().any(|d| d.installer);
         let mut next_boot = 1;
         let mut usb_controller = false;
-        // q35's AHCI controller has six ports with one drive each, so every
-        // SATA drive names its port; the i440FX's IDE buses take two each.
-        let mut sata_port = 0;
+        // Place every IDE/SATA drive explicitly: q35's AHCI controller has
+        // six ports with one drive each; the i440FX has two IDE buses with
+        // two units each (QEMU's own placement fails at the third drive).
+        let mut ide_slot = 0;
         let mut ide_bus = |dev: &mut String| {
-            if !pc_hw {
-                dev.push_str(&format!(",bus=ide.{sata_port}"));
-                sata_port += 1;
+            if pc_hw {
+                dev.push_str(&format!(",bus=ide.{},unit={}", ide_slot / 2, ide_slot % 2));
+            } else {
+                dev.push_str(&format!(",bus=ide.{ide_slot}"));
             }
+            ide_slot += 1;
         };
         for (i, d) in spec.disks.iter().enumerate() {
             if d.cdrom {
@@ -327,7 +330,7 @@ impl Qemu {
         Ok(a)
     }
 
-    fn command(&self, args: &[String]) -> Command {
+    pub fn command(&self, args: &[String]) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.args(args);
         if let Some(dir) = self.binary.parent() {
@@ -441,7 +444,7 @@ fn qmp(port: u16, command: &str) -> Result<()> {
 }
 
 /// Send one QMP command, with arguments, and wait for its reply.
-fn qmp_with(port: u16, command: &str, arguments: Option<serde_json::Value>) -> Result<()> {
+pub fn qmp_with(port: u16, command: &str, arguments: Option<serde_json::Value>) -> Result<()> {
     let stream = TcpStream::connect(("127.0.0.1", port))
         .with_context(|| format!("connecting to QMP on port {port}; is the VM running?"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -592,7 +595,7 @@ fn qemu_path(p: &Path) -> String {
     p.to_string_lossy().replace(',', ",,")
 }
 
-fn free_port() -> Result<u16> {
+pub fn free_port() -> Result<u16> {
     Ok(TcpListener::bind("127.0.0.1:0")?.local_addr()?.port())
 }
 
@@ -760,10 +763,13 @@ mod tests {
         assert!(a.contains("ide-cd,drive=cd1,bus=ide.0,bootindex=0"));
         assert!(a.contains("ide-cd,drive=cd2,bus=ide.1 "));
         assert!(a.contains("e1000e,netdev=net0"));
-        // Classic PC hardware: the IDE buses pick their own units.
+        // Classic PC hardware: two IDE buses, two units each.
         s.accel_mode = AccelMode::Compat;
+        s.disks[0].bus = DiskBus::Auto;
         let a = q.args(&s, false).unwrap().join(" ");
-        assert!(a.contains("ide-cd,drive=cd2 ") && !a.contains("bus=ide."));
+        assert!(a.contains("ide-hd,drive=disk0,bus=ide.0,unit=0"));
+        assert!(a.contains("ide-cd,drive=cd1,bus=ide.0,unit=1,bootindex=0"));
+        assert!(a.contains("ide-cd,drive=cd2,bus=ide.1,unit=0 "));
     }
 
     #[test]
