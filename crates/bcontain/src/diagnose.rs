@@ -23,6 +23,10 @@ pub enum Outcome {
     /// QEMU's 640x480 "Guest has not initialized the display" placeholder.
     NothingDrawn,
     Exited(String),
+    /// QEMU stopped answering its control channel (it was then ended).
+    Unresponsive,
+    /// QEMU stopped answering and could not be ended: frozen in the hypervisor.
+    Frozen(u32),
 }
 
 impl std::fmt::Display for Outcome {
@@ -31,6 +35,11 @@ impl std::fmt::Display for Outcome {
             Outcome::Drew(w, h) => write!(f, "OK: firmware drew the screen ({w}x{h})"),
             Outcome::NothingDrawn => write!(f, "STUCK: nothing drawn"),
             Outcome::Exited(e) => write!(f, "QEMU EXITED: {e}"),
+            Outcome::Unresponsive => write!(f, "STUCK: QEMU itself stopped responding"),
+            Outcome::Frozen(pid) => write!(
+                f,
+                "FROZE: QEMU stopped responding and would not quit (end qemu-system-x86_64.exe, pid {pid}, in Task Manager)"
+            ),
         }
     }
 }
@@ -97,6 +106,16 @@ fn variants(spec: &VmSpec) -> Vec<(String, VmSpec)> {
         s.legacy_devices |= changed;
         changed
     });
+    add("virtio network instead of e1000e", &|s| {
+        // legacy_devices also picks e1000e; an NVMe disk is unaffected.
+        let nvme_only = s.disks.iter().all(|d| d.cdrom || d.bus != DiskBus::Auto);
+        std::mem::replace(&mut s.legacy_devices, false) && nvme_only
+    });
+    add("1 vCPU", &|s| std::mem::replace(&mut s.cpus, 1) > 1);
+    add("4 GiB of memory", &|s| {
+        s.hugepages = false;
+        std::mem::replace(&mut s.memory_mib, 4096) > 4096
+    });
     add("without an explicit boot order", &|s| {
         let mut changed = false;
         for d in s.disks.iter_mut().filter(|d| d.installer) {
@@ -143,16 +162,34 @@ fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
     }
     let shot = work.join("diagnose.ppm");
     let _ = std::fs::remove_file(&shot);
-    let taken = qemu::qmp_with(
-        port,
-        "screendump",
-        Some(serde_json::json!({ "filename": shot.to_string_lossy() })),
-    );
-    let _ = qemu::qmp_with(port, "quit", None);
-    std::thread::sleep(Duration::from_millis(500));
+    // A QEMU frozen inside the hypervisor may never answer, or never exit:
+    // every step from here has a deadline, so one variant cannot stall the
+    // rest of the diagnosis.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let target = shot.clone();
+    std::thread::spawn(move || {
+        let taken = qemu::qmp_with(
+            port,
+            "screendump",
+            Some(serde_json::json!({ "filename": target.to_string_lossy() })),
+        );
+        let _ = qemu::qmp_with(port, "quit", None);
+        let _ = tx.send(taken.map_err(|e| format!("{e:#}")));
+    });
+    let taken = rx
+        .recv_timeout(Duration::from_secs(15))
+        .unwrap_or_else(|_| Err("QMP did not answer".into()));
     let _ = child.kill();
-    let _ = child.wait();
-    taken.context("taking a screenshot over QMP")?;
+    let gone = Instant::now() + Duration::from_secs(10);
+    while child.try_wait()?.is_none() {
+        if Instant::now() > gone {
+            return Ok(Outcome::Frozen(child.id()));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    if taken.is_err() && !shot.exists() {
+        return Ok(Outcome::Unresponsive);
+    }
     Ok(classify(
         std::fs::read(&shot).ok().as_deref().and_then(ppm_size),
     ))

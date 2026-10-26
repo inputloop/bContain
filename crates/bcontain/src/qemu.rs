@@ -459,9 +459,11 @@ fn qmp(port: u16, command: &str) -> Result<()> {
 
 /// Send one QMP command, with arguments, and wait for its reply.
 pub fn qmp_with(port: u16, command: &str, arguments: Option<serde_json::Value>) -> Result<()> {
-    let stream = TcpStream::connect(("127.0.0.1", port))
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
         .with_context(|| format!("connecting to QMP on port {port}; is the VM running?"))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut w = stream;
     let mut line = String::new();
