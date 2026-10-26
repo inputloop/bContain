@@ -1,0 +1,4 @@
+/target
+/dist
+*.qcow2
+*.iso

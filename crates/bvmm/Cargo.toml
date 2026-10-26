@@ -1,0 +1,7 @@
+[package]
+name = "bvmm"
+description = "bContain native VMM: the seam for bContain's own hypervisor (KVM on Linux, WHP on Windows)"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
