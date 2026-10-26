@@ -22,7 +22,7 @@ const IMAGE_EXTS: [&str; 9] = [
 pub fn open_app_window(url: &str) -> Option<Child> {
     let profile = crate::store::data_dir().join("ui-profile");
     for exe in browser_candidates() {
-        let child = Command::new(&exe)
+        let child = helper(&mut Command::new(&exe))
             .arg(format!("--app={url}"))
             .arg(format!("--user-data-dir={}", profile.display()))
             .args([
@@ -38,9 +38,15 @@ pub fn open_app_window(url: &str) -> Option<Child> {
         }
     }
     #[cfg(windows)]
-    let r = no_window(Command::new("cmd").args(["/C", "start", "", url])).spawn();
+    let r = helper(Command::new("cmd").args(["/C", "start", "", url]))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
     #[cfg(not(windows))]
-    let r = Command::new("xdg-open").arg(url).spawn();
+    let r = helper(Command::new("xdg-open").arg(url))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
     if r.is_err() {
         eprintln!("could not open a browser; visit {url}");
     }
@@ -94,7 +100,7 @@ pub fn pick_file() -> Result<Option<String>> {
             $d.Filter='VM and container images|*.iso;*.qcow2;*.img;*.raw;*.vhdx;*.vhd;*.vmdk;*.vdi;*.tar|All files|*.*';\
             if($d.ShowDialog($o) -eq 'OK'){$d.FileName}";
         let out =
-            no_window(Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]))
+            helper(Command::new("powershell").args(["-NoProfile", "-STA", "-Command", script]))
                 .output()?;
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
         Ok((!path.is_empty()).then_some(path))
@@ -126,7 +132,7 @@ pub fn pick_file() -> Result<Option<String>> {
             ),
         ];
         for (exe, args) in attempts {
-            match Command::new(exe).args(&args).output() {
+            match helper(Command::new(exe).args(&args)).output() {
                 Ok(out) => {
                     let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
                     return Ok((out.status.success() && !path.is_empty()).then_some(path));
@@ -256,11 +262,23 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// On Windows, keep helper processes from flashing a console window.
-#[cfg(windows)]
-pub fn no_window(cmd: &mut Command) -> &mut Command {
-    use std::os::windows::process::CommandExt;
-    cmd.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+/// Prepare a helper process (qemu-img, nvidia-smi, a browser...) to start
+/// safely from the double-click app as well as from a terminal.
+///
+/// The app detaches from its console (see [`release_console_if_owned`]),
+/// which leaves its standard handles invalid. A child that inherits them
+/// fails to start with "The handle is invalid. (os error 6)". So stdin is
+/// always null here; callers capture or null stdout/stderr (`.output()`
+/// does). On Windows the child also gets no console window, so console
+/// tools don't flash one.
+pub fn helper(cmd: &mut Command) -> &mut Command {
+    cmd.stdin(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    cmd
 }
 
 /// When bContain was started by double-clicking it, Windows gave it a

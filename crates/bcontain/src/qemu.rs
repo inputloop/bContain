@@ -48,7 +48,9 @@ impl Qemu {
     }
 
     pub fn version(&self) -> Option<String> {
-        let out = Command::new(&self.binary).arg("--version").output().ok()?;
+        let out = crate::desktop::helper(Command::new(&self.binary).arg("--version"))
+            .output()
+            .ok()?;
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .next()

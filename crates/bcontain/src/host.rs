@@ -142,12 +142,11 @@ impl Host {
 }
 
 fn nvidia_gpus() -> Vec<Gpu> {
-    let out = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=name,memory.total,driver_version",
-            "--format=csv,noheader,nounits",
-        ])
-        .output();
+    let out = crate::desktop::helper(Command::new("nvidia-smi").args([
+        "--query-gpu=name,memory.total,driver_version",
+        "--format=csv,noheader,nounits",
+    ]))
+    .output();
     let Ok(out) = out else { return Vec::new() };
     if !out.status.success() {
         return Vec::new();

@@ -433,14 +433,20 @@ fn qemu_img_create(path: &Path, size_mib: u64) -> Result<()> {
     } else {
         PathBuf::from(exe)
     };
-    let status = Command::new(&img)
-        .args(["create", "-q", "-f", "qcow2"])
-        .arg(path)
-        .arg(format!("{size_mib}M"))
-        .status()
-        .with_context(|| format!("running {}", img.display()))?;
-    if !status.success() {
-        bail!("qemu-img create failed ({status})");
+    let out = crate::desktop::helper(
+        Command::new(&img)
+            .args(["create", "-q", "-f", "qcow2"])
+            .arg(path)
+            .arg(format!("{size_mib}M")),
+    )
+    .output()
+    .with_context(|| format!("running {}", img.display()))?;
+    if !out.status.success() {
+        bail!(
+            "qemu-img create failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
