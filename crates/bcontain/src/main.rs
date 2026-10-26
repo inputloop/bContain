@@ -344,6 +344,9 @@ fn real_main() -> Result<()> {
             if attach {
                 let rec = store::load(&name)?;
                 let hv = engine::backend(&rec.backend)?;
+                if store::running(&name, hv.as_ref()).is_some() {
+                    bail!("`{name}` is already running");
+                }
                 ops::gpu_acquire(&rec.spec)?;
                 let code = hv.run_foreground(&rec.spec);
                 ops::gpu_release(&rec.spec)?;

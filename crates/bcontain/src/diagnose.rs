@@ -146,7 +146,12 @@ fn hardware_variants(base: &VmSpec) -> Vec<(String, VmSpec)> {
 
 /// Boot `spec` without a window for a few seconds and screenshot it.
 fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
-    let mut args = q.args(spec, false)?;
+    // No window means no OpenGL: virgl's device refuses to start without it.
+    let mut spec = spec.clone();
+    if spec.display == Display::Virgl {
+        spec.display = Display::Basic;
+    }
+    let mut args = q.args(&spec, false)?;
     if let Some(i) = args.iter().position(|a| a == "-display") {
         args[i + 1] = "none".into();
     }
@@ -164,6 +169,7 @@ fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
         .stderr(out)
         .spawn()
         .context("starting qemu")?;
+    let spec = &spec;
     let wait = if spec.accel_mode == AccelMode::Software {
         60
     } else {

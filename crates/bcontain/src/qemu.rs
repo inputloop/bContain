@@ -423,7 +423,8 @@ impl Hypervisor for Qemu {
             if force { "quit" } else { "system_powerdown" },
         )?;
         if force {
-            for _ in 0..50 {
+            // Letting go of a passed-through GPU can take tens of seconds.
+            for _ in 0..600 {
                 if !self.is_alive(running) {
                     return Ok(());
                 }

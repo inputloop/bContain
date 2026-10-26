@@ -224,13 +224,16 @@ pub fn create(
             if d.exists() && fs::read_dir(&d)?.next().is_some() {
                 bail!("{} already exists and is not empty", d.display());
             }
+            let made_here = !d.exists();
             fs::create_dir_all(&d).with_context(|| format!("creating {}", d.display()))?;
-            d
+            (d, made_here)
         }
-        _ => dir.clone(),
+        _ => (dir.clone(), false),
     };
+    let (disks_dir, made_here) = disks_dir;
     let custom_storage = disks_dir != dir;
-    let mut storage_cleanup = DirGuard(custom_storage.then(|| disks_dir.clone()));
+    // On failure, remove the folder only if bContain made it.
+    let mut storage_cleanup = DirGuard(made_here.then(|| disks_dir.clone()));
 
     let mut spec = VmSpec {
         name: opts.name.clone(),
@@ -241,7 +244,7 @@ pub fn create(
         display: opts.display.unwrap_or(sizing.display),
         firmware: opts.firmware.unwrap_or(Firmware::Bios),
         ports: opts.ports.clone(),
-        hugepages: sizing.hugepages && opts.memory_mib.is_none_or(|m| m <= host.hugepages_free_mib),
+        hugepages: false, // decided below, once the memory size is final
         no_reboot: is_container,
         legacy_devices: opts.legacy_devices,
         accel_mode: opts.accel_mode,
@@ -277,9 +280,11 @@ pub fn create(
             // as a USB stick, run "Re-image Steam Deck", which writes to the
             // NVMe drive. The recovery image itself is never modified.
             log("SteamOS recovery image: installer on USB, target on NVMe, UEFI".into());
-            let size = opts
-                .disk_mib
-                .unwrap_or(if opts.gpu { 256 * 1024 } else { 128 * 1024 });
+            let size = opts.disk_mib.filter(|&s| s > 0).unwrap_or(if opts.gpu {
+                256 * 1024
+            } else {
+                128 * 1024
+            });
             let disk = disks_dir.join("steamos-nvme.qcow2");
             report_space(&disks_dir, size, log);
             log(format!("creating {} GiB NVMe disk", size / 1024));
@@ -502,6 +507,9 @@ pub fn create(
         other => bail!("unknown engine `{other}` (expected `qemu` or `native`)"),
     }
 
+    // Hugepages only when the reserved pool covers the final size: the
+    // Windows and container branches above may have raised it.
+    spec.hugepages = sizing.hugepages && spec.memory_mib <= host.hugepages_free_mib;
     let rec = VmRecord {
         spec,
         preset: preset.name().into(),
@@ -712,6 +720,9 @@ pub fn stop(name: &str, force: bool) -> Result<()> {
     let hv = engine::backend(&rec.backend)?;
     let r =
         store::running(name, hv.as_ref()).with_context(|| format!("`{name}` is not running"))?;
+    // A container's init has no ACPI handler: the power button would do
+    // nothing, so containers are always ended outright.
+    let force = force || rec.spec.kernel.is_some();
     hv.stop(&r, force)?;
     if force {
         store::clear_running(name);
@@ -736,11 +747,15 @@ pub fn stop(name: &str, force: bool) -> Result<()> {
 pub fn remove(name: &str, force: bool) -> Result<()> {
     let rec = store::load(name)?;
     let hv = engine::backend(&rec.backend)?;
-    if let Some(r) = store::running(name, hv.as_ref()) {
+    if store::running(name, hv.as_ref()).is_some() {
         if !force {
             bail!("`{name}` is running; stop it first or pass --force");
         }
-        hv.stop(&r, true)?;
+        stop(name, true)?; // waits for QEMU and gives a GPU back
+    } else if rec.spec.gpu.is_some() {
+        // A crash can leave the GPU on vfio-pci; the record is the last
+        // place that says which one to give back.
+        let _ = gpu_release(&rec.spec);
     }
     // Only what bContain created is deleted; the source image is left alone.
     if let Some(dir) = &rec.storage {
@@ -777,13 +792,16 @@ pub struct VmView {
 }
 
 pub fn views() -> Result<Vec<VmView>> {
-    let hv = engine::backend("qemu").ok();
     Ok(store::list()?
         .into_iter()
         .map(|r| {
-            let state = hv.as_ref().map_or(store::State::Stopped, |h| {
-                store::state(&r.spec.name, h.as_ref())
-            });
+            // Each VM's own backend decides whether it is alive: asking QEMU
+            // about a native VM would report it stopped and drop its run file.
+            let state = engine::backend(&r.backend)
+                .ok()
+                .map_or(store::State::Stopped, |h| {
+                    store::state(&r.spec.name, h.as_ref())
+                });
             (r, state)
         })
         .map(|(r, state)| VmView {
@@ -837,6 +855,11 @@ pub fn set_accel_mode(name: &str, mode: crate::engine::AccelMode) -> Result<()> 
     let hv = engine::backend(&rec.backend)?;
     if store::running(name, hv.as_ref()).is_some() {
         bail!("stop `{name}` before changing its acceleration");
+    }
+    if rec.spec.gpu.is_some() && mode != crate::engine::AccelMode::Auto {
+        bail!(
+            "`{name}` has the GPU: passthrough needs automatic acceleration (KVM, q35, host CPU)"
+        );
     }
     rec.spec.accel_mode = mode;
     store::save(&rec)
