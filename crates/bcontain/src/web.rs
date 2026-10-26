@@ -83,7 +83,7 @@ fn inspect(image: &str) -> Value {
         };
     }
     match crate::registry::Reference::parse(image) {
-        Ok(r) if !image.contains('\\') && !image.contains(' ') => json!({
+        Ok(r) if !crate::ops::looks_like_path(image) && !image.contains(' ') => json!({
             "ok": true,
             "kind": format!("container image from {}", r.registry.replace("registry-1.docker.io", "Docker Hub")),
             "container": true,
@@ -262,6 +262,11 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
             } else {
                 std::path::PathBuf::from(path)
             };
+            if !target.is_absolute() {
+                return Ok(Reply::Json(
+                    json!({ "ok": false, "message": "the storage folder must be a full path, e.g. D:\\VMs" }),
+                ));
+            }
             Ok(Reply::Json(match store::free_space(&target) {
                 Some((free, total, drive)) => json!({
                     "ok": true,

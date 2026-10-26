@@ -266,6 +266,11 @@ pub fn status(name: &str) -> Option<Job> {
     JOBS.lock().ok()?.get(name).cloned()
 }
 
+/// A diagnosis is running: its probes have the VM's disks open.
+pub fn busy(name: &str) -> bool {
+    status(name).is_some_and(|j| !j.done)
+}
+
 pub fn run(name: &str, report: &mut dyn FnMut(String), trying: &mut dyn FnMut(&str)) -> Result<()> {
     let rec = store::load(name)?;
     if rec.backend != "qemu" {

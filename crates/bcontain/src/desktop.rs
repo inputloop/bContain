@@ -12,7 +12,7 @@ use serde::Serialize;
 use crate::image::{self, ImageKind};
 
 /// File extensions worth offering as images.
-const IMAGE_EXTS: [&str; 10] = [
+pub const IMAGE_EXTS: [&str; 10] = [
     "iso", "qcow2", "img", "raw", "vhdx", "vhd", "vmdk", "vdi", "tar", "bz2",
 ];
 
@@ -266,7 +266,14 @@ pub fn describe(p: &Path) -> Option<String> {
     }
     Some(match image::sniff(p).ok()? {
         ImageKind::Disk(image::DiskFormat::Iso) => "ISO installer / live disc".into(),
-        ImageKind::Disk(image::DiskFormat::Raw) => "raw disk".into(),
+        // Raw is what sniff says of any file it does not recognise; a disk
+        // is at least a megabyte.
+        ImageKind::Disk(image::DiskFormat::Raw) => {
+            if std::fs::metadata(p).is_ok_and(|m| m.len() < 1 << 20) {
+                return None;
+            }
+            "raw disk".into()
+        }
         ImageKind::Disk(f) => format!(
             "{} disk",
             f.qemu_name().to_uppercase().replace("VPC", "VHD")

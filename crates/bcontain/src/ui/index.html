@@ -286,29 +286,30 @@ async function loadVms() {
   const vms = await api("GET", "/api/vms");
   if (!vms.length) { $("#vms").innerHTML = `<tr><td colspan="7" class="empty">No machines yet. Choose an image under <b>Add a machine</b>.</td></tr>`; return; }
   $("#vms").innerHTML = vms.map(v => {
-    const run = v.state === "running";
+    const run = v.state === "running", busy = run || v.diagnosing;
     return `<tr>
       <td class="vmname"><b>${esc(v.name)}</b></td>
       <td><span class="state ${run ? "running" : ""}"><span class="dot"></span>${esc(v.state)}</span>
         ${v.last_error ? `<div class="crash" title="${esc(v.last_error)}">stopped with an error: ${esc(v.last_error)}</div>` : ""}</td>
       <td><span class="kind">${esc(v.kind)}</span>
-        ${v.kind === "vm" ? `<select class="accelSel" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Acceleration: if this VM shows nothing or crashes, try another mode">
+        ${v.kind === "vm" ? `<select class="accelSel" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Acceleration: if this VM shows nothing or crashes, try another mode">
           ${["auto", "compat", "software"].map(m => `<option value="${m}" ${v.accel_mode === m ? "selected" : ""}>${{auto: "automatic", compat: "compatibility (classic PC)", software: "software (slow)"}[m]}</option>`).join("")}
         </select>` : ""}</td>
       <td class="num">${v.cpus}<span class="unit"> vCPU</span></td><td class="num">${gib(v.memory_mib)}</td>
       <td class="src" title="${esc(v.source)}&#10;Disks in ${esc(v.storage)}">${esc(v.source)}<br><span class="where">disks: ${esc(v.storage)}</span></td>
       <td><div class="actions">
-        <button class="primary" data-act="start" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Start</button>
+        <button class="primary" data-act="start" data-n="${esc(v.name)}" ${busy ? "disabled" : ""}>Start</button>
         <button data-act="stop" data-n="${esc(v.name)}" ${run ? "" : "disabled"}>Stop</button>
         <button data-act="log" data-n="${esc(v.name)}">Log</button>
-        <button data-act="diagnose" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Boot it several ways without a window to find what stops it before the firmware draws anything (2-3 minutes)">Diagnose</button>
-        ${v.installer ? `<button data-act="eject" data-n="${esc(v.name)}" ${run ? "disabled" : ""} title="Detach the ISO / installer so the VM boots what it installed">Eject installer</button>` : ""}
-        <button class="danger" data-act="delete" data-n="${esc(v.name)}" ${run ? "disabled" : ""}>Delete</button>
+        ${v.kind === "vm" && !v.gpu ? `<button data-act="diagnose" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Boot it several ways without a window to find what stops it before the firmware draws anything (about 5 minutes)">${v.diagnosing ? "Diagnosing…" : "Diagnose"}</button>` : ""}
+        ${v.installer ? `<button data-act="eject" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Detach the ISO / installer so the VM boots what it installed">Eject installer</button>` : ""}
+        <button class="danger" data-act="delete" data-n="${esc(v.name)}" ${busy ? "disabled" : ""}>Delete</button>
       </div></td></tr>`;
   }).join("");
 }
 $("#vms").addEventListener("change", async (e) => {
   const sel = e.target.closest(".accelSel"); if (!sel) return;
+  sel.blur(); // a focused select pauses the table refresh
   try { await api("POST", `/api/vms/${encodeURIComponent(sel.dataset.n)}/accel/${sel.value}`); }
   catch (err) { alert(err.message); }
   loadVms();
@@ -325,11 +326,15 @@ $("#vms").addEventListener("click", async (e) => {
       const url = `/api/vms/${encodeURIComponent(n)}/diagnose`;
       try {
         await api("POST", url);
-        let stepStart = Date.now(), lastStep = null;
+        let stepStart = Date.now(), lastStep = null, seen = false;
+        const deadline = Date.now() + 20 * 60 * 1000;
+        loadVms();
         for (;;) {
           await new Promise(r => setTimeout(r, 1500));
+          if (Date.now() > deadline) { $("#log").textContent += "\n(gave up waiting after 20 minutes)"; break; }
           const j = await api("GET", url);
-          if (!j) continue;
+          if (!j) { if (seen) { $("#log").textContent += "\n(bContain was restarted; the diagnosis is gone)"; break; } continue; }
+          seen = true;
           if (j.trying !== lastStep) { lastStep = j.trying; stepStart = Date.now(); }
           const secs = Math.round((Date.now() - stepStart) / 1000);
           $("#log").textContent = j.lines.join("\n") +
@@ -337,7 +342,7 @@ $("#vms").addEventListener("click", async (e) => {
           if (j.done) break;
         }
       } catch (err) { $("#log").textContent += "\n" + err.message; }
-      b.disabled = false; return;
+      loadVms(); return;
     }
     if (act === "delete") { if (!confirm(`Delete ${n}? Disks bContain created for it are removed; your source image is kept.`)) return;
       await api("DELETE", `/api/vms/${encodeURIComponent(n)}`); }
@@ -367,7 +372,7 @@ function showInfo(i) {
   CHOSEN = i.ok ? i : null;
   const el = $("#imageInfo");
   el.className = "info" + (i.ok || !i.message ? "" : " err");
-  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#storageField").hidden = true; $("#nativeField").hidden = true; updateBanner(); return; }
+  if (!i.ok) { el.textContent = i.message || ""; $("#diskField").hidden = true; $("#storageField").hidden = true; $("#nativeField").hidden = true; $("#gpuField").hidden = true; updateBanner(); return; }
   el.innerHTML = `<span class="tag">✔ ${esc(i.kind)}</span>` + (i.size_mib ? ` · ${size(i.size_mib)}` : "") +
     (i.remote ? " · downloaded when you create it" : "");
   const name = createForm.elements.name;
@@ -379,12 +384,17 @@ function showInfo(i) {
   if (i.iso) updateSpace();
   $("#nativeField").hidden = !(i.container && HOST && HOST.native && HOST.native.usable);
   $("#gpuField").hidden = !(HOST && HOST.gpu && HOST.gpu.linux) || !!i.container;
+  const gpu = createForm.elements.gpu, preset = createForm.elements.preset, disk = createForm.elements.disk_size;
   if (i.gaming) {
     // With a GPU to give, go all in; otherwise just leave room for games.
+    // What is set here is undone when a non-gaming image is picked next.
     const canGpu = !$("#gpuField").hidden && !!HOST.gpu.ready;
-    createForm.elements.gpu.checked = canGpu;
-    if (canGpu && !createForm.elements.preset.value) createForm.elements.preset.value = "gaming";
-    createForm.elements.disk_size.value = canGpu ? "256G" : "128G";
+    gpu.checked = canGpu; gpu.dataset.auto = canGpu ? "1" : "";
+    if (canGpu && !preset.value) { preset.value = "gaming"; preset.dataset.auto = "1"; }
+    if (!disk.dataset.touched) disk.value = canGpu ? "256G" : "128G";
+  } else {
+    if (gpu.dataset.auto) { gpu.checked = false; delete gpu.dataset.auto; }
+    if (preset.dataset.auto) { preset.value = ""; delete preset.dataset.auto; }
   }
   const legacy = createForm.elements.legacy;
   if (!legacy.dataset.touched) legacy.checked = !!i.windows;

@@ -57,8 +57,23 @@ pub enum Resolved {
 }
 
 /// Turn a path or registry reference into something bootable, pulling if needed.
+/// Something written as a file path rather than a registry reference: a
+/// typo in it should say "not found", not start a Docker Hub pull.
+pub fn looks_like_path(s: &str) -> bool {
+    let b = s.as_bytes();
+    let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+    let ext = Path::new(s)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| crate::desktop::IMAGE_EXTS.contains(&e.to_lowercase().as_str()));
+    s.starts_with(['/', '.', '~']) || s.contains('\\') || drive || ext
+}
+
 pub fn resolve_image(image: &str, log: &mut dyn FnMut(String)) -> Result<Resolved> {
     let p = Path::new(image);
+    if !p.exists() && looks_like_path(image) {
+        bail!("{image}: file not found");
+    }
     if p.exists() {
         return Ok(match image::sniff(p)? {
             ImageKind::Disk(f) => Resolved::Disk(fs::canonicalize(p)?, f),
@@ -623,6 +638,9 @@ impl BootKeys {
 
 fn start_inner(name: &str) -> Result<(engine::Running, Option<BootKeys>)> {
     let mut rec = store::load(name)?;
+    if crate::diagnose::busy(name) {
+        bail!("`{name}` is being diagnosed; wait for that to finish");
+    }
     // Machines made before discs were checked for UEFI-only boot catalogs
     // (Bazzite, for one) sit at SeaBIOS's "code 0009"; switch them over.
     if rec.spec.firmware == Firmware::Bios
@@ -746,6 +764,9 @@ pub fn stop(name: &str, force: bool) -> Result<()> {
 
 pub fn remove(name: &str, force: bool) -> Result<()> {
     let rec = store::load(name)?;
+    if crate::diagnose::busy(name) {
+        bail!("`{name}` is being diagnosed; wait for that to finish");
+    }
     let hv = engine::backend(&rec.backend)?;
     if store::running(name, hv.as_ref()).is_some() {
         if !force {
@@ -789,6 +810,10 @@ pub struct VmView {
     pub installer: bool,
     /// Where the VM's disks live.
     pub storage: PathBuf,
+    /// A diagnosis is booting it in the background (nothing else may).
+    pub diagnosing: bool,
+    /// Has a passed-through GPU (cannot be diagnosed or switched off Auto).
+    pub gpu: bool,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -811,6 +836,8 @@ pub fn views() -> Result<Vec<VmView>> {
                 .unwrap_or_else(|| store::vm_dir(&r.spec.name)),
             accel_mode: r.spec.accel_mode,
             installer: r.spec.disks.iter().any(|d| d.cdrom || d.installer),
+            diagnosing: crate::diagnose::busy(&r.spec.name),
+            gpu: r.spec.gpu.is_some(),
             last_error: (state == store::State::Stopped)
                 .then(|| last_error(&store::log_path(&r.spec.name)))
                 .flatten(),
@@ -836,6 +863,9 @@ pub fn views() -> Result<Vec<VmView>> {
 pub fn eject(name: &str) -> Result<usize> {
     let mut rec = store::load(name)?;
     let hv = engine::backend(&rec.backend)?;
+    if crate::diagnose::busy(name) {
+        bail!("`{name}` is being diagnosed; wait for that to finish");
+    }
     if store::running(name, hv.as_ref()).is_some() {
         bail!("stop `{name}` before ejecting its installer");
     }
