@@ -147,7 +147,12 @@ has no Actions budget.
    When it finishes, Explorer opens with the file selected.
 3. Copy `bContain.exe` wherever you like and double-click it.
 
-The first build takes a few minutes, and later builds are quicker. Because
+The first build takes a few minutes, and later builds are quicker. The QEMU
+installer is cached in `%LOCALAPPDATA%\bcontain\build-cache`. A download
+that gets cut off resumes on the next attempt, and a damaged cached copy is
+replaced automatically. If the QEMU site is slow or blocked for you, point the
+build at another copy of the same folder with
+`.\scripts\bundle-qemu-windows.ps1 -Mirror https://your.mirror/w64/`. Because
 the exe is built on your own machine, Windows SmartScreen does not show its
 "downloaded from the internet" warning.
 
