@@ -362,6 +362,34 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
         (Method::Get, ["api", "vms", name, "diagnose"]) => {
             Ok(Reply::Json(json!(crate::diagnose::status(name))))
         }
+        (Method::Get, ["api", "vms", name, "settings"]) => Ok(Reply::Json(json!(
+            crate::settings::details(name, host).map_err(|e| (404, format!("{e:#}")))?
+        ))),
+        (Method::Post, ["api", "vms", name, "settings"]) => {
+            let patch: crate::settings::Patch = read_json(req)?;
+            crate::settings::apply(name, host, &patch).map_err(bad)?;
+            Ok(Reply::Json(json!({ "ok": true })))
+        }
+        (Method::Post, ["api", "vms", name, "resize"]) => {
+            let body: SizeBody = read_json(req)?;
+            let mib = ops::parse_mib(&body.size).map_err(bad)?;
+            let (from, to) = crate::settings::resize(name, mib).map_err(bad)?;
+            Ok(Reply::Json(
+                json!({ "ok": true, "from_mib": from, "to_mib": to }),
+            ))
+        }
+        (Method::Post, ["api", "vms", name, "snapshot"]) => {
+            let body: SnapshotBody = read_json(req)?;
+            let n = body.name.trim();
+            match body.action.as_str() {
+                "take" => crate::settings::snapshot_create(name, n),
+                "restore" => crate::settings::snapshot_restore(name, n),
+                "delete" => crate::settings::snapshot_delete(name, n),
+                other => return Err((400, format!("unknown snapshot action {other}"))),
+            }
+            .map_err(bad)?;
+            Ok(Reply::Json(json!({ "ok": true })))
+        }
         (Method::Post, ["api", "vms", name, "eject"]) => {
             let n = ops::eject(name).map_err(bad)?;
             Ok(Reply::Json(json!({ "ok": true, "ejected": n })))
@@ -419,6 +447,17 @@ struct CreateBody {
     accel_mode: crate::engine::AccelMode,
     #[serde(default)]
     gpu: bool,
+}
+
+#[derive(Deserialize)]
+struct SizeBody {
+    size: String,
+}
+
+#[derive(Deserialize)]
+struct SnapshotBody {
+    action: String,
+    name: String,
 }
 
 #[derive(Deserialize)]

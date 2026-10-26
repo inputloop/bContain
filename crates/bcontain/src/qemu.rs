@@ -374,6 +374,20 @@ impl Qemu {
             }
         }
         if spec.display != Display::Headless {
+            if let Some((w, h)) = spec.resolution {
+                // The card offers this as the monitor's preferred mode; the
+                // guest (Windows, Linux's bochs/virtio drivers) picks it up.
+                let card = if spec.display == Display::Virgl {
+                    "virtio-vga-gl"
+                } else {
+                    "VGA"
+                };
+                let (x, y) = (format!("{card}.xres={w}"), format!("{card}.yres={h}"));
+                push(&["-global", &x, "-global", &y]);
+            }
+            if spec.fullscreen {
+                push(&["-full-screen"]);
+            }
             if pc_hw {
                 push(&["-usb", "-device", "usb-tablet"]); // PIIX3 UHCI
             } else {
@@ -754,6 +768,8 @@ mod tests {
             accel_mode: AccelMode::Auto,
             gpu: None,
             guest: GuestOs::Other,
+            fullscreen: false,
+            resolution: None,
         }
     }
 

@@ -265,6 +265,8 @@ pub fn create(
         accel_mode: opts.accel_mode,
         gpu: None,
         guest: GuestOs::Other,
+        fullscreen: false,
+        resolution: None,
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);
@@ -938,7 +940,8 @@ pub fn fetch_kernel(image: &str, log: &mut dyn FnMut(String)) -> Result<PathBuf>
     Ok(target)
 }
 
-fn qemu_img_create(path: &Path, size_mib: u64) -> Result<()> {
+/// The qemu-img beside the QEMU in use, else the one on PATH.
+pub fn qemu_img() -> Result<PathBuf> {
     let qemu = crate::qemu::Qemu::locate()?;
     let exe = if cfg!(windows) {
         "qemu-img.exe"
@@ -946,11 +949,33 @@ fn qemu_img_create(path: &Path, size_mib: u64) -> Result<()> {
         "qemu-img"
     };
     let img = qemu.binary.with_file_name(exe);
-    let img = if img.is_file() {
+    Ok(if img.is_file() {
         img
     } else {
         PathBuf::from(exe)
-    };
+    })
+}
+
+/// Run qemu-img quietly; its stdout, or its stderr as the error.
+pub fn run_qemu_img(args: &[&std::ffi::OsStr]) -> Result<String> {
+    let img = qemu_img()?;
+    let out = crate::desktop::helper(Command::new(&img).args(args))
+        .output()
+        .with_context(|| format!("running {}", img.display()))?;
+    if !out.status.success() {
+        bail!(
+            "qemu-img {} failed: {}",
+            args.first()
+                .map(|a| a.to_string_lossy())
+                .unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+fn qemu_img_create(path: &Path, size_mib: u64) -> Result<()> {
+    let img = qemu_img()?;
     let create = |options: &[&str]| {
         crate::desktop::helper(
             Command::new(&img)

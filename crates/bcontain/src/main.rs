@@ -16,6 +16,7 @@ mod ops;
 mod preset;
 mod qemu;
 mod registry;
+mod settings;
 mod store;
 mod web;
 mod windows;
@@ -88,6 +89,32 @@ enum Cmd {
     Info { name: String },
     /// Detach a VM's installer (ISO or SteamOS recovery image) so it boots the installed system.
     Eject { name: String },
+    /// Change a stopped VM's hardware or display settings.
+    Set {
+        name: String,
+        #[arg(long)]
+        cpus: Option<u32>,
+        /// e.g. 16G.
+        #[arg(long)]
+        memory: Option<String>,
+        /// HOST:GUEST[/udp]; replaces the VM's forwards (repeatable; `--port ''` clears).
+        #[arg(short = 'p', long = "port")]
+        ports: Option<Vec<String>>,
+        /// Open the VM's window full screen.
+        #[arg(long)]
+        fullscreen: Option<bool>,
+        /// Preferred screen resolution, e.g. 1920x1080 (`''` for the guest's choice).
+        #[arg(long)]
+        resolution: Option<String>,
+    },
+    /// Grow a stopped VM's system disk (never shrinks), e.g. `resize win11 256G`.
+    Resize { name: String, size: String },
+    /// Snapshots of a stopped VM's disks: list, take, restore or delete.
+    Snapshot {
+        name: String,
+        #[command(subcommand)]
+        cmd: Option<SnapshotCmd>,
+    },
     /// Print a VM's log (backend output and serial console).
     Logs { name: String },
     /// Delete a VM's definition and the disks bContain created for it.
@@ -212,6 +239,23 @@ struct Tune {
     /// Give the host's free GPU to the VM (Linux + KVM; see docs/GPU-PASSTHROUGH.md).
     #[arg(long)]
     gpu: bool,
+}
+
+#[derive(Subcommand)]
+enum SnapshotCmd {
+    /// List the VM's snapshots (the default).
+    List,
+    /// Save the VM's disks as they are now.
+    Take {
+        snapshot: String,
+    },
+    /// Put the VM's disks back to a snapshot; changes since are lost.
+    Restore {
+        snapshot: String,
+    },
+    Delete {
+        snapshot: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum, Default)]
@@ -413,6 +457,76 @@ fn real_main() -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Set {
+            name,
+            cpus,
+            memory,
+            ports,
+            fullscreen,
+            resolution,
+        } => {
+            let patch = settings::Patch {
+                cpus,
+                memory,
+                ports,
+                fullscreen,
+                resolution,
+            };
+            let rec = settings::apply(&name, &Host::detect(), &patch)?;
+            println!(
+                "`{name}`: {} vCPU, {} MiB, {} port forward(s){}{}",
+                rec.spec.cpus,
+                rec.spec.memory_mib,
+                rec.spec.ports.len(),
+                if rec.spec.fullscreen {
+                    ", full screen"
+                } else {
+                    ""
+                },
+                rec.spec
+                    .resolution
+                    .map(|(w, h)| format!(", {w}x{h}"))
+                    .unwrap_or_default()
+            );
+            Ok(())
+        }
+        Cmd::Resize { name, size } => {
+            let (from, to) = settings::resize(&name, ops::parse_mib(&size)?)?;
+            println!(
+                "grew `{name}`'s disk from {} to {} GiB; extend the partition inside the guest \
+                 to use it (Windows: Disk Management > Extend Volume)",
+                from / 1024,
+                to / 1024
+            );
+            Ok(())
+        }
+        Cmd::Snapshot { name, cmd } => match cmd.unwrap_or(SnapshotCmd::List) {
+            SnapshotCmd::List => {
+                let list = settings::snapshots(&name)?;
+                if list.is_empty() {
+                    println!("`{name}` has no snapshots");
+                }
+                for s in list {
+                    println!("{}  (taken {})", s.name, s.taken);
+                }
+                Ok(())
+            }
+            SnapshotCmd::Take { snapshot } => {
+                settings::snapshot_create(&name, &snapshot)?;
+                println!("took snapshot `{snapshot}` of `{name}`");
+                Ok(())
+            }
+            SnapshotCmd::Restore { snapshot } => {
+                settings::snapshot_restore(&name, &snapshot)?;
+                println!("`{name}` is back to snapshot `{snapshot}`");
+                Ok(())
+            }
+            SnapshotCmd::Delete { snapshot } => {
+                settings::snapshot_delete(&name, &snapshot)?;
+                println!("deleted snapshot `{snapshot}` of `{name}`");
+                Ok(())
+            }
+        },
         Cmd::Eject { name } => {
             let n = ops::eject(&name)?;
             println!("ejected {n} installer disk(s) from `{name}`; it now boots its own disk");

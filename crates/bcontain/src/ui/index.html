@@ -82,6 +82,13 @@ label.wide { grid-column: 1 / -1; }
 .pathrow input { flex: 1; }
 .space { font-size: 12px; color: var(--muted); }
 .where { font-size: 11px; }
+.settings h3 { font-size: 13px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.settings h3:first-of-type { margin-top: 4px; }
+.settings .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.settings .note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+.snaps { list-style: none; padding: 0; margin: 0 0 8px; }
+.snaps li { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.snaps li span { flex: 1; } .snaps li small { color: var(--muted); }
 .space.err { color: var(--bad); }
 pre { background: var(--code); border-radius: 8px; padding: 12px; max-height: 320px; overflow: auto;
   font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; margin: 0; white-space: pre-wrap; }
@@ -224,6 +231,12 @@ button.big { padding: 9px 18px; }
       </form>
       <div id="createMsg" class="msg"></div>
     </section>
+    <section class="card settings" id="settingsCard" hidden>
+      <h2 id="settingsTitle">Settings</h2>
+      <p class="note" id="settingsLock"></p>
+      <div id="settingsBody"></div>
+      <div id="settingsMsg" class="msg"></div>
+    </section>
     <section class="card" id="logCard" hidden>
       <h2 id="logTitle">Log</h2>
       <pre id="log"></pre>
@@ -284,6 +297,14 @@ async function loadVms() {
   // Don't rebuild the table under an open dropdown.
   if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#vms select")) return;
   const vms = await api("GET", "/api/vms");
+  const lockOf = (list, n) => { const v = (list || []).find(x => x.name === n); return !v ? null : v.state === "running" || v.diagnosing; };
+  const before = SETTINGS_FOR ? lockOf(LAST_VMS, SETTINGS_FOR) : null;
+  LAST_VMS = vms;
+  if (SETTINGS_FOR && !$("#settingsCard").hidden) {
+    const now = lockOf(vms, SETTINGS_FOR);
+    if (now === null) { $("#settingsCard").hidden = true; SETTINGS_FOR = null; }      // deleted
+    else if (now !== before) showSettings(SETTINGS_FOR);                               // started or stopped
+  }
   if (!vms.length) { $("#vms").innerHTML = `<tr><td colspan="7" class="empty">No machines yet. Choose an image under <b>Add a machine</b>.</td></tr>`; return; }
   $("#vms").innerHTML = vms.map(v => {
     const run = v.state === "running", busy = run || v.diagnosing;
@@ -300,6 +321,7 @@ async function loadVms() {
       <td><div class="actions">
         <button class="primary" data-act="start" data-n="${esc(v.name)}" ${busy ? "disabled" : ""}>Start</button>
         <button data-act="stop" data-n="${esc(v.name)}" ${run ? "" : "disabled"}>Stop</button>
+        <button data-act="settings" data-n="${esc(v.name)}">Settings</button>
         <button data-act="log" data-n="${esc(v.name)}">Log</button>
         ${v.kind === "vm" && !v.gpu ? `<button data-act="diagnose" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Boot it several ways without a window to find what stops it before the firmware draws anything (about 5 minutes)">${v.diagnosing ? "Diagnosing…" : "Diagnose"}</button>` : ""}
         ${v.installer ? `<button data-act="eject" data-n="${esc(v.name)}" ${busy ? "disabled" : ""} title="Detach the ISO / installer so the VM boots what it installed">Eject installer</button>` : ""}
@@ -319,6 +341,7 @@ $("#vms").addEventListener("click", async (e) => {
   const n = b.dataset.n, act = b.dataset.act;
   try {
     if (act === "log") return showLog(n);
+    if (act === "settings") return showSettings(n);
     if (act === "diagnose") {
       $("#logCard").hidden = false; $("#logTitle").textContent = `Diagnose · ${n}`;
       $("#log").textContent = "Booting the VM several ways without a window: 2-3 minutes…";
@@ -349,6 +372,80 @@ $("#vms").addEventListener("click", async (e) => {
     else await api("POST", `/api/vms/${encodeURIComponent(n)}/${act}`);
   } catch (err) { alert(err.message); }
   loadVms();
+});
+// Settings for one VM: hardware, display, disk, snapshots. Changes apply
+// to a stopped VM; the server refuses them while it runs.
+let SETTINGS_FOR = null, LAST_VMS = null;
+const when = (sec) => new Date(sec * 1000).toLocaleString();
+async function showSettings(n) {
+  SETTINGS_FOR = n;
+  const card = $("#settingsCard"); card.hidden = false;
+  $("#settingsTitle").textContent = `Settings · ${n}`;
+  $("#settingsMsg").textContent = "";
+  let d;
+  try { d = await api("GET", `/api/vms/${encodeURIComponent(n)}/settings`); }
+  catch (err) { $("#settingsBody").textContent = err.message; return; }
+  const vm = (LAST_VMS || []).find(v => v.name === n);
+  const locked = vm && (vm.state === "running" || vm.diagnosing);
+  $("#settingsLock").textContent = locked ? "Stop the VM to change these." : "";
+  const dis = locked ? "disabled" : "";
+  const res = ["", "1280x720", "1280x800", "1600x900", "1920x1080", "2560x1440", "3840x2160"];
+  if (d.resolution && !res.includes(d.resolution)) res.push(d.resolution);
+  let html = `<h3>Hardware</h3><div class="row">
+      <label>vCPUs <input name="cpus" type="number" min="1" max="${d.host_threads}" value="${d.cpus}" ${dis}></label>
+      <label>Memory <input name="memory" value="${d.memory_mib % 1024 ? d.memory_mib + "M" : d.memory_mib / 1024 + "G"}" ${dis}></label>
+      <label style="grid-column: span 2">Ports (host:guest, comma-separated; /udp for UDP)
+        <input name="ports" value="${esc(d.ports.join(", "))}" ${dis}></label></div>
+    <p class="note">This host has ${d.host_threads} threads and ${size(d.host_memory_mib)} of memory.</p>`;
+  if (d.has_display) html += `<h3>Display</h3><div class="row">
+      <label>Screen resolution <select name="resolution" ${dis}>${res.map(r =>
+        `<option value="${r}" ${r === d.resolution ? "selected" : ""}>${r || "the guest's choice"}</option>`).join("")}</select></label>
+      <label class="checkbox"><input type="checkbox" name="fullscreen" ${d.fullscreen ? "checked" : ""} ${dis}> Open full screen</label></div>
+    <p class="note">The resolution is offered to the guest as its monitor's preferred mode. In full screen, Ctrl+Alt+F leaves it.</p>`;
+  html += `<div class="row" style="margin-top:10px"><div><button class="primary" id="saveSettings" ${dis}>Save settings</button></div></div>`;
+  if (d.disk) html += `<h3>Disk</h3>
+    <p class="note">${esc(d.disk.path)} · ${esc(d.disk.format)} · ${d.disk.size_mib ? size(d.disk.size_mib) : "size unknown"}</p>
+    ${d.disk.can_grow ? `<div class="row"><label>Grow to <input name="grow" placeholder="e.g. ${Math.ceil((d.disk.size_mib || 65536) / 1024) * 2}G" ${dis}></label>
+      <div><button id="growDisk" ${dis}>Grow disk</button></div></div>
+    <p class="note">Disks only grow. Afterwards, extend the partition inside the guest (Windows: Disk Management → Extend Volume).
+      Restoring a snapshot taken before growing also restores the smaller size.</p>`
+      : `<p class="note">${esc(d.disk.format)} disks can't be grown here.</p>`}`;
+  html += `<h3>Snapshots</h3>`;
+  if (!d.can_snapshot) html += `<p class="note">Snapshots need a qcow2 disk; this VM has none.</p>`;
+  else html += `<ul class="snaps">${d.snapshots.map(s => `<li><span>${esc(s.name)} <small>${when(s.taken)}</small></span>
+      <button data-snap="restore" data-s="${esc(s.name)}" ${dis}>Restore</button>
+      <button class="danger" data-snap="delete" data-s="${esc(s.name)}" ${dis}>Delete</button></li>`).join("") ||
+      `<li><span><small>None yet.</small></span></li>`}</ul>
+    <div class="row"><label>New snapshot <input name="snapName" placeholder="e.g. clean install" maxlength="40" ${dis}></label>
+      <div><button id="takeSnap" ${dis}>Take snapshot</button></div></div>
+    <p class="note">A snapshot saves the VM's disks and boot entries as they are now; Restore puts them back and loses what changed since.</p>`;
+  $("#settingsBody").innerHTML = html;
+  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+async function settingsAction(fn, done) {
+  const msg = $("#settingsMsg"); msg.className = "msg"; msg.textContent = "Working…";
+  try { await fn(); msg.textContent = done; await showSettings(SETTINGS_FOR); $("#settingsMsg").textContent = done; loadVms(); }
+  catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+}
+$("#settingsBody").addEventListener("click", (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  const n = SETTINGS_FOR, url = `/api/vms/${encodeURIComponent(n)}`, f = (k) => $("#settingsBody").querySelector(`[name=${k}]`);
+  if (b.id === "saveSettings") settingsAction(() => api("POST", `${url}/settings`, {
+      cpus: Number(f("cpus").value), memory: f("memory").value,
+      ports: f("ports").value.split(",").map(s => s.trim()).filter(Boolean),
+      ...(f("resolution") ? { resolution: f("resolution").value, fullscreen: f("fullscreen").checked } : {}) }),
+    "Saved. The changes apply the next time the VM starts.");
+  else if (b.id === "growDisk") settingsAction(() => api("POST", `${url}/resize`, { size: f("grow").value }),
+    "Disk grown. Extend the partition inside the guest to use the new space.");
+  else if (b.id === "takeSnap") settingsAction(() => api("POST", `${url}/snapshot`, { action: "take", name: f("snapName").value }),
+    "Snapshot taken.");
+  else if (b.dataset.snap === "restore") {
+    if (!confirm(`Restore ${n} to "${b.dataset.s}"? Everything that changed on its disks since that snapshot is lost.`)) return;
+    settingsAction(() => api("POST", `${url}/snapshot`, { action: "restore", name: b.dataset.s }), `Restored to "${b.dataset.s}".`);
+  } else if (b.dataset.snap === "delete") {
+    if (!confirm(`Delete snapshot "${b.dataset.s}"?`)) return;
+    settingsAction(() => api("POST", `${url}/snapshot`, { action: "delete", name: b.dataset.s }), "Snapshot deleted.");
+  }
 });
 async function showLog(n) {
   $("#logCard").hidden = false; $("#logTitle").textContent = `Log · ${n}`;

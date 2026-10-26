@@ -110,6 +110,12 @@ pub struct VmSpec {
     /// What runs inside, where it changes the virtual hardware.
     #[serde(default)]
     pub guest: GuestOs,
+    /// Open the VM's window full screen.
+    #[serde(default)]
+    pub fullscreen: bool,
+    /// The resolution the virtual monitor reports as preferred (EDID).
+    #[serde(default)]
+    pub resolution: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
