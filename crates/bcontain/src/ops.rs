@@ -295,6 +295,16 @@ pub fn create(
                 );
                 spec.firmware = Firmware::Uefi;
             }
+            if cdrom
+                && opts.firmware.is_none()
+                && image::iso_boot(&path).is_some_and(|b| b.uefi_only())
+            {
+                log(
+                    "UEFI-only disc (its boot catalog has only an EFI entry): using UEFI firmware"
+                        .into(),
+                );
+                spec.firmware = Firmware::Uefi;
+            }
             spec.disks.push(Disk {
                 path,
                 format,
@@ -442,7 +452,19 @@ impl Drop for DirGuard {
 }
 
 pub fn start(name: &str) -> Result<engine::Running> {
-    let rec = store::load(name)?;
+    let mut rec = store::load(name)?;
+    // Machines made before discs were checked for UEFI-only boot catalogs
+    // (Bazzite, for one) sit at SeaBIOS's "code 0009"; switch them over.
+    if rec.spec.firmware == Firmware::Bios
+        && rec
+            .spec
+            .disks
+            .iter()
+            .any(|d| d.cdrom && image::iso_boot(&d.path).is_some_and(|b| b.uefi_only()))
+    {
+        rec.spec.firmware = Firmware::Uefi;
+        store::save(&rec)?;
+    }
     let hv = engine::backend(&rec.backend)?;
     hv.check()
         .with_context(|| format!("{} backend is not usable", hv.name()))?;

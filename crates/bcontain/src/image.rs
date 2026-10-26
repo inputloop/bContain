@@ -112,6 +112,117 @@ pub fn sniff(path: &Path) -> Result<ImageKind> {
     Ok(ImageKind::Disk(DiskFormat::Raw))
 }
 
+/// The ISO 9660 volume identifier (the disc's label), if `path` is an ISO.
+pub fn iso_volume_id(path: &Path) -> Option<String> {
+    let mut f = File::open(path).ok()?;
+    let mut pvd = [0u8; 72];
+    f.seek(SeekFrom::Start(0x8000)).ok()?;
+    if read_up_to(&mut f, &mut pvd).ok()? < 72 || &pvd[1..6] != b"CD001" {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&pvd[40..72]).trim().to_string())
+}
+
+/// A Windows installation ISO, by its disc label (Microsoft's labels start
+/// with the edition family, e.g. `CCCOMA_X64FRE_EN-US_DV9`) or file name.
+pub fn is_windows_installer(path: &Path) -> bool {
+    const LABELS: [&str; 8] = [
+        "CCCOMA_", "CCSA_", "CPBA_", "CENA_", "CPRA_", "J_CCSA", "SSS_X64", "WIN",
+    ];
+    if iso_volume_id(path).is_some_and(|v| LABELS.iter().any(|l| v.to_uppercase().starts_with(l))) {
+        return true;
+    }
+    let n = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    n.ends_with(".iso")
+        && (["win10", "win11", "windows", "server20"]
+            .iter()
+            .any(|k| n.contains(k))
+            || n.starts_with("win"))
+}
+
+/// What an ISO's El Torito boot catalog offers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IsoBoot {
+    /// A bootable x86 entry: legacy BIOS can start it.
+    pub bios: bool,
+    /// An EFI entry: UEFI can start it.
+    pub efi: bool,
+}
+
+impl IsoBoot {
+    /// Only UEFI can start this disc (SeaBIOS: "Could not read from CDROM (code 0009)").
+    pub fn uefi_only(&self) -> bool {
+        self.efi && !self.bios
+    }
+}
+
+/// Read an ISO's El Torito boot catalog; `None` if the disc is not bootable.
+pub fn iso_boot(path: &Path) -> Option<IsoBoot> {
+    const PLATFORM_X86: u8 = 0;
+    const PLATFORM_EFI: u8 = 0xef;
+    let mut f = File::open(path).ok()?;
+    // Volume descriptors start at sector 16; the boot record is type 0.
+    let mut catalog_lba = None;
+    for sector in 16..32u64 {
+        let mut vd = [0u8; 0x4b];
+        f.seek(SeekFrom::Start(sector * 2048)).ok()?;
+        if read_up_to(&mut f, &mut vd).ok()? < vd.len() || &vd[1..6] != b"CD001" {
+            return None;
+        }
+        match vd[0] {
+            0 if vd[7..30].starts_with(b"EL TORITO SPECIFICATION") => {
+                catalog_lba = Some(u32::from_le_bytes(vd[0x47..0x4b].try_into().unwrap()));
+                break;
+            }
+            255 => break,
+            _ => {}
+        }
+    }
+    let mut cat = [0u8; 2048];
+    f.seek(SeekFrom::Start(catalog_lba? as u64 * 2048)).ok()?;
+    read_up_to(&mut f, &mut cat).ok()?;
+    if cat[0] != 1 || cat[0x1e..0x20] != [0x55, 0xaa] {
+        return None;
+    }
+    let mut boot = IsoBoot::default();
+    let mut platform = cat[1];
+    // The initial/default entry belongs to the validation entry's platform.
+    let mut mark = |platform: u8, bootable: bool| {
+        if bootable {
+            boot.bios |= platform == PLATFORM_X86;
+            boot.efi |= platform == PLATFORM_EFI;
+        }
+    };
+    mark(platform, cat[0x20] == 0x88);
+    // Then section headers (0x90, last one 0x91), each followed by its entries.
+    let mut at = 0x40;
+    while at + 32 <= cat.len() {
+        match cat[at] {
+            0x90 | 0x91 => {
+                platform = cat[at + 1];
+                let count = u16::from_le_bytes([cat[at + 2], cat[at + 3]]) as usize;
+                for i in 1..=count {
+                    let e = at + i * 32;
+                    if e + 32 > cat.len() {
+                        break;
+                    }
+                    mark(platform, cat[e] == 0x88);
+                }
+                let last = cat[at] == 0x91;
+                at += (count + 1) * 32;
+                if last {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    Some(boot)
+}
+
 /// What a raw disk's GPT partition table says about booting it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct GptInfo {
@@ -221,6 +332,90 @@ mod tests {
             }
         }
         d
+    }
+
+    fn iso_with_label(label: &str) -> Vec<u8> {
+        let mut d = vec![0u8; 0x8800];
+        d[0x8001..0x8006].copy_from_slice(b"CD001");
+        d[0x8028..0x8048].fill(b' ');
+        d[0x8028..0x8028 + label.len()].copy_from_slice(label.as_bytes());
+        d
+    }
+
+    /// A minimal El Torito disc: boot record at 17, catalog at 20.
+    fn eltorito(default_platform: u8, sections: &[u8]) -> Vec<u8> {
+        let mut img = vec![0u8; 24 * 2048];
+        let pvd = 16 * 2048;
+        img[pvd] = 1;
+        img[pvd + 1..pvd + 6].copy_from_slice(b"CD001");
+        let br = 17 * 2048;
+        img[br + 1..br + 6].copy_from_slice(b"CD001");
+        img[br + 7..br + 30].copy_from_slice(b"EL TORITO SPECIFICATION");
+        img[br + 0x47..br + 0x4b].copy_from_slice(&20u32.to_le_bytes());
+        let t = 18 * 2048;
+        img[t] = 255;
+        img[t + 1..t + 6].copy_from_slice(b"CD001");
+        let c = 20 * 2048;
+        img[c] = 1;
+        img[c + 1] = default_platform;
+        img[c + 0x1e] = 0x55;
+        img[c + 0x1f] = 0xaa;
+        img[c + 0x20] = 0x88;
+        for (i, p) in sections.iter().enumerate() {
+            let h = c + 0x40 + i * 64;
+            img[h] = if i + 1 == sections.len() { 0x91 } else { 0x90 };
+            img[h + 1] = *p;
+            img[h + 2] = 1;
+            img[h + 32] = 0x88;
+        }
+        img
+    }
+
+    #[test]
+    fn reads_el_torito() {
+        let dir = std::env::temp_dir().join(format!("bcontain-eltorito-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let both = dir.join("hybrid.iso");
+        std::fs::write(&both, eltorito(0, &[0xef])).unwrap();
+        let b = iso_boot(&both).unwrap();
+        assert!(b.bios && b.efi && !b.uefi_only());
+        // Bazzite-style: the only entry is EFI.
+        let efi = dir.join("efi.iso");
+        std::fs::write(&efi, eltorito(0xef, &[])).unwrap();
+        assert!(iso_boot(&efi).unwrap().uefi_only());
+        let bios = dir.join("bios.iso");
+        std::fs::write(&bios, eltorito(0, &[])).unwrap();
+        assert_eq!(
+            iso_boot(&bios),
+            Some(IsoBoot {
+                bios: true,
+                efi: false
+            })
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn recognises_windows_isos() {
+        let w = tmp("winiso.iso", &iso_with_label("CCCOMA_X64FRE_EN-US_DV9"));
+        assert_eq!(
+            iso_volume_id(&w).as_deref(),
+            Some("CCCOMA_X64FRE_EN-US_DV9")
+        );
+        assert!(is_windows_installer(&w));
+        assert!(!is_windows_installer(&tmp(
+            "other.iso",
+            &iso_with_label("Ubuntu 24.04 LTS amd64")
+        )));
+        // A renamed ISO is still Windows by its label; a name alone works too.
+        assert!(is_windows_installer(&tmp(
+            "a.iso",
+            &iso_with_label("CPBA_X64FRE_EN-US_DV5")
+        )));
+        assert!(is_windows_installer(&tmp(
+            "Win11_24H2_English_x64.iso",
+            &iso_with_label("X")
+        )));
     }
 
     #[test]

@@ -34,23 +34,7 @@ fn looks_like_gaming(path: &std::path::Path) -> bool {
 }
 
 fn looks_like_windows(path: &std::path::Path) -> bool {
-    let n = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
-    [
-        "win10",
-        "win11",
-        "windows",
-        "win7",
-        "win2k",
-        "server20",
-        "en-us_windows",
-        "_windows_",
-    ]
-    .iter()
-    .any(|k| n.contains(k))
-        || n.starts_with("win")
+    crate::image::is_windows_installer(path)
 }
 
 /// GPU passthrough readiness for the "This machine" panel.
