@@ -8,6 +8,8 @@ mod engine;
 mod gpu;
 mod host;
 mod image;
+#[allow(dead_code)] // used by the Windows guest profile (in progress)
+mod iso;
 mod native;
 mod oci;
 mod ops;
