@@ -267,6 +267,8 @@ pub fn create(
         guest: GuestOs::Other,
         fullscreen: false,
         resolution: None,
+        tpm: false,
+        secure_boot: false,
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);
@@ -364,16 +366,29 @@ pub fn create(
                 bus: DiskBus::Auto,
                 installer: true,
             });
-            let answers = crate::windows::answer_iso(&disks_dir)?;
-            spec.disks.push(Disk {
-                path: answers,
-                format: DiskFormat::Iso,
-                cdrom: true,
-                ephemeral: false,
-                bus: DiskBus::Auto,
-                installer: false,
-            });
-            log("  answer disc added: Setup skips Windows 11's TPM, Secure Boot, CPU and RAM checks".into());
+            // On a Linux host with swtpm and Secure Boot firmware, give Windows
+            // 11 the real thing; elsewhere (Windows hosts: no SMM under WHPX,
+            // no swtpm) an answer disc switches Setup's checks off instead.
+            let secure = (spec.firmware == Firmware::Uefi && crate::qemu::swtpm().is_some())
+                .then(crate::qemu::Qemu::locate)
+                .and_then(Result::ok)
+                .filter(|q| q.accel != bvmm::Accel::Whp && q.find_secure_uefi().is_some());
+            if secure.is_some() {
+                spec.tpm = true;
+                spec.secure_boot = true;
+                log("  TPM 2.0 (swtpm) and Secure Boot: Windows 11's requirements are met".into());
+            } else {
+                let answers = crate::windows::answer_iso(&disks_dir)?;
+                spec.disks.push(Disk {
+                    path: answers,
+                    format: DiskFormat::Iso,
+                    cdrom: true,
+                    ephemeral: false,
+                    bus: DiskBus::Auto,
+                    installer: false,
+                });
+                log("  answer disc added: Setup skips Windows 11's TPM, Secure Boot, CPU and RAM checks".into());
+            }
             log("  \"Press any key to boot from CD\" is pressed for you on the first start".into());
             log("  after installing, stop the VM and use Eject installer".into());
         }

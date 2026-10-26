@@ -118,12 +118,27 @@ impl Qemu {
         dirs
     }
 
+    /// Secure Boot firmware and the variables template that has Microsoft's
+    /// keys enrolled (Windows' boot loader is signed with them).
+    pub fn find_secure_uefi(&self) -> Option<(PathBuf, PathBuf)> {
+        const PAIRS: [(&str, &str); 2] = [
+            ("OVMF_CODE_4M.secboot.fd", "OVMF_VARS_4M.ms.fd"), // Debian, Ubuntu
+            ("OVMF_CODE.secboot.fd", "OVMF_VARS.secboot.fd"),  // Fedora
+        ];
+        let dirs = self.share_dirs();
+        PAIRS.iter().find_map(|(code, vars)| {
+            dirs.iter()
+                .map(|d| (d.join(code), d.join(vars)))
+                .find(|(c, v)| c.is_file() && v.is_file())
+        })
+    }
+
     fn find_uefi_code(&self) -> Option<PathBuf> {
-        const NAMES: [&str; 5] = [
+        // Secure Boot builds are left out: they need SMM (see find_secure_uefi).
+        const NAMES: [&str; 4] = [
             "OVMF_CODE_4M.fd",
             "OVMF_CODE.fd",
             "edk2-x86_64-code.fd",
-            "OVMF_CODE.secboot.fd",
             "OVMF.fd",
         ];
         // Prefer by name over by folder: a split code + variables pair beats
@@ -158,6 +173,10 @@ impl Qemu {
         // firmware's or Windows' logo, never the spinner).
         if spec.guest == GuestOs::Windows {
             machine.push_str(",hpet=off");
+        }
+        // Secure Boot firmware keeps its keys in flash that only SMM may write.
+        if spec.secure_boot {
+            machine.push_str(",smm=on");
         }
         push(&["-machine", &machine]);
         let accel = if spec.accel_mode == AccelMode::Software {
@@ -207,7 +226,20 @@ impl Qemu {
             push(&["-object", &backend]);
         }
 
-        if spec.firmware == Firmware::Uefi {
+        if spec.firmware == Firmware::Uefi && spec.secure_boot {
+            if accel == Accel::Whp {
+                bail!("Secure Boot needs SMM, which Windows' hypervisor platform lacks");
+            }
+            let (code, template) = self.find_secure_uefi().context(
+                "Secure Boot firmware not found; install `ovmf` (Debian/Ubuntu) or `edk2-ovmf` (Fedora)",
+            )?;
+            let vars = per_vm_vars(&template, &spec.name)?;
+            push(&["-global", "driver=cfi.pflash01,property=secure,value=on"]);
+            let drive = format!("if=pflash,format=raw,readonly=on,file={}", qemu_path(&code));
+            push(&["-drive", &drive]);
+            let drive = format!("if=pflash,format=raw,file={}", qemu_path(&vars));
+            push(&["-drive", &drive]);
+        } else if spec.firmware == Firmware::Uefi {
             let code = self.find_uefi_code().context(
                 "UEFI firmware (OVMF) not found; install `ovmf` / `edk2-ovmf` or use --firmware bios",
             )?;
@@ -218,6 +250,26 @@ impl Qemu {
                 let drive = format!("if=pflash,format=raw,file={}", qemu_path(&vars));
                 push(&["-drive", &drive]);
             }
+        }
+        if spec.tpm {
+            // swtpm is started beside QEMU by start_helpers().
+            let sock = crate::store::vm_dir(&spec.name).join("swtpm.sock");
+            let chardev = format!("socket,id=chrtpm,path={}", qemu_path(&sock));
+            push(&[
+                "-chardev",
+                &chardev,
+                "-tpmdev",
+                "emulator,id=tpm0,chardev=chrtpm",
+            ]);
+            // CRB is the TPM interface of current PCs; TIS for the classic PC.
+            push(&[
+                "-device",
+                if pc_hw {
+                    "tpm-tis,tpmdev=tpm0"
+                } else {
+                    "tpm-crb,tpmdev=tpm0"
+                },
+            ]);
         }
 
         if let Some(gpu) = &spec.gpu {
@@ -460,6 +512,7 @@ impl Hypervisor for Qemu {
     fn launch(&self, spec: &VmSpec, log: &Path) -> Result<Running> {
         let port = free_port()?;
         let mut args = self.args(spec, false)?;
+        start_helpers(spec)?;
         args.extend([
             "-qmp".into(),
             format!("tcp:127.0.0.1:{port},server=on,wait=off"),
@@ -493,6 +546,7 @@ impl Hypervisor for Qemu {
 
     fn run_foreground(&self, spec: &VmSpec) -> Result<i32> {
         let args = self.args(spec, true)?;
+        start_helpers(spec)?;
         let status = self
             .command(&args)
             .status()
@@ -674,7 +728,7 @@ fn uefi_vars_for(code: &Path, name: &str) -> Result<Option<PathBuf>> {
         .unwrap_or_default();
     let template = match file {
         "OVMF_CODE_4M.fd" => "OVMF_VARS_4M.fd",
-        "OVMF_CODE.fd" | "OVMF_CODE.secboot.fd" => "OVMF_VARS.fd",
+        "OVMF_CODE.fd" => "OVMF_VARS.fd",
         "edk2-x86_64-code.fd" => "edk2-i386-vars.fd",
         _ => return Ok(None),
     };
@@ -682,12 +736,87 @@ fn uefi_vars_for(code: &Path, name: &str) -> Result<Option<PathBuf>> {
     if !template.is_file() {
         return Ok(None);
     }
+    per_vm_vars(&template, name).map(Some)
+}
+
+/// The VM's own copy of a UEFI variables template, made on first use.
+fn per_vm_vars(template: &Path, name: &str) -> Result<PathBuf> {
     let vars = crate::store::vm_dir(name).join("efivars.fd");
     if !vars.is_file() {
         fs::create_dir_all(crate::store::vm_dir(name))?;
-        fs::copy(&template, &vars).with_context(|| format!("copying {}", template.display()))?;
+        fs::copy(template, &vars).with_context(|| format!("copying {}", template.display()))?;
     }
-    Ok(Some(vars))
+    Ok(vars)
+}
+
+/// The swtpm program, if installed (Linux hosts).
+pub fn swtpm() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return None;
+    }
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join("swtpm"))
+        .find(|p| p.is_file())
+}
+
+/// Start what QEMU connects to for `spec` before QEMU itself: swtpm for a
+/// TPM. swtpm exits when QEMU disconnects (--terminate); one left over
+/// from a QEMU that never connected is ended first, since it holds the
+/// TPM's state.
+pub fn start_helpers(spec: &VmSpec) -> Result<()> {
+    if !spec.tpm {
+        return Ok(());
+    }
+    let exe = swtpm().context("this VM has a TPM, which needs swtpm: `sudo apt install swtpm`")?;
+    let dir = crate::store::vm_dir(&spec.name);
+    let state = dir.join("tpm");
+    let (sock, pidfile) = (dir.join("swtpm.sock"), dir.join("swtpm.pid"));
+    fs::create_dir_all(&state)?;
+    if let Some(pid) = fs::read_to_string(&pidfile)
+        .ok()
+        .and_then(|p| p.trim().parse::<u32>().ok())
+    {
+        let mut sys = sysinfo::System::new();
+        let p = sysinfo::Pid::from_u32(pid);
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[p]), true);
+        if let Some(proc_) = sys.process(p) {
+            if proc_.name().to_string_lossy().contains("swtpm") {
+                proc_.kill();
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    let _ = fs::remove_file(&sock);
+    let _ = fs::remove_file(&pidfile);
+    let arg = |k: &str, p: &Path| format!("{k}{}", p.display());
+    let out = Command::new(exe)
+        .args(["socket", "--tpm2", "--terminate", "--daemon"])
+        .arg("--tpmstate")
+        .arg(arg("dir=", &state))
+        .arg("--ctrl")
+        .arg(arg("type=unixio,path=", &sock))
+        .arg("--pid")
+        .arg(arg("file=", &pidfile))
+        .arg("--log")
+        .arg(arg("file=", &dir.join("swtpm.log")))
+        .stdin(Stdio::null())
+        .output()
+        .context("starting swtpm")?;
+    if !out.status.success() {
+        bail!(
+            "swtpm failed to start: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    for _ in 0..50 {
+        if sock.exists() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    bail!("swtpm did not create {}", sock.display())
 }
 
 /// QEMU option values use `,` as a separator; a literal comma is written `,,`.
@@ -770,6 +899,8 @@ mod tests {
             guest: GuestOs::Other,
             fullscreen: false,
             resolution: None,
+            tpm: false,
+            secure_boot: false,
         }
     }
 
@@ -829,6 +960,26 @@ mod tests {
         // Without an installer there is no explicit boot order.
         s.disks.pop();
         assert!(!q.args(&s, false).unwrap().join(" ").contains("bootindex"));
+    }
+
+    #[test]
+    fn tpm() {
+        let q = Qemu {
+            binary: "qemu".into(),
+            accel: Accel::Kvm,
+            audio: None,
+        };
+        let mut s = spec();
+        s.tpm = true;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("-tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-crb,tpmdev=tpm0"));
+        assert!(a.contains("swtpm.sock"));
+        s.accel_mode = AccelMode::Compat;
+        assert!(q
+            .args(&s, false)
+            .unwrap()
+            .join(" ")
+            .contains("tpm-tis,tpmdev=tpm0"));
     }
 
     #[test]

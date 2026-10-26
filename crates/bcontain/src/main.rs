@@ -106,6 +106,12 @@ enum Cmd {
         /// Preferred screen resolution, e.g. 1920x1080 (`''` for the guest's choice).
         #[arg(long)]
         resolution: Option<String>,
+        /// A TPM 2.0 from swtpm (Linux hosts).
+        #[arg(long)]
+        tpm: Option<bool>,
+        /// UEFI Secure Boot with Microsoft's keys (Linux hosts).
+        #[arg(long)]
+        secure_boot: Option<bool>,
     },
     /// Grow a stopped VM's system disk (never shrinks), e.g. `resize win11 256G`.
     Resize { name: String, size: String },
@@ -464,6 +470,8 @@ fn real_main() -> Result<()> {
             ports,
             fullscreen,
             resolution,
+            tpm,
+            secure_boot,
         } => {
             let patch = settings::Patch {
                 cpus,
@@ -471,6 +479,8 @@ fn real_main() -> Result<()> {
                 ports,
                 fullscreen,
                 resolution,
+                tpm,
+                secure_boot,
             };
             let rec = settings::apply(&name, &Host::detect(), &patch)?;
             println!(

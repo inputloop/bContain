@@ -402,6 +402,14 @@ async function showSettings(n) {
         `<option value="${r}" ${r === d.resolution ? "selected" : ""}>${r || "the guest's choice"}</option>`).join("")}</select></label>
       <label class="checkbox"><input type="checkbox" name="fullscreen" ${d.fullscreen ? "checked" : ""} ${dis}> Open full screen</label></div>
     <p class="note">The resolution is offered to the guest as its monitor's preferred mode. In full screen, Ctrl+Alt+F leaves it.</p>`;
+  if (!d.native && d.has_display) {
+    const sec = (key, label, on, blocker) => `<label class="checkbox" title="${esc(blocker || "")}">
+      <input type="checkbox" name="${key}" ${on ? "checked" : ""} ${dis || (!on && blocker ? "disabled" : "")}> ${label}</label>`;
+    html += `<h3>Security</h3><div class="row">
+      ${sec("tpm", "TPM 2.0", d.tpm, d.tpm_blocker)}${sec("secure_boot", "Secure Boot", d.secure_boot, d.secure_boot_blocker)}</div>
+    <p class="note">${esc([!d.tpm && d.tpm_blocker, !d.secure_boot && d.secure_boot_blocker].filter(Boolean).join(" ")) ||
+      "Windows 11 wants both. Switching Secure Boot starts the firmware's settings afresh (boot entries included); Windows still boots."}</p>`;
+  }
   html += `<div class="row" style="margin-top:10px"><div><button class="primary" id="saveSettings" ${dis}>Save settings</button></div></div>`;
   if (d.disk) html += `<h3>Disk</h3>
     <p class="note">${esc(d.disk.path)} · ${esc(d.disk.format)} · ${d.disk.size_mib ? size(d.disk.size_mib) : "size unknown"}</p>
@@ -433,7 +441,8 @@ $("#settingsBody").addEventListener("click", (e) => {
   if (b.id === "saveSettings") settingsAction(() => api("POST", `${url}/settings`, {
       cpus: Number(f("cpus").value), memory: f("memory").value,
       ports: f("ports").value.split(",").map(s => s.trim()).filter(Boolean),
-      ...(f("resolution") ? { resolution: f("resolution").value, fullscreen: f("fullscreen").checked } : {}) }),
+      ...(f("resolution") ? { resolution: f("resolution").value, fullscreen: f("fullscreen").checked } : {}),
+      ...(f("tpm") ? { tpm: f("tpm").checked, secure_boot: f("secure_boot").checked } : {}) }),
     "Saved. The changes apply the next time the VM starts.");
   else if (b.id === "growDisk") settingsAction(() => api("POST", `${url}/resize`, { size: f("grow").value }),
     "Disk grown. Extend the partition inside the guest to use the new space.");

@@ -116,6 +116,13 @@ pub struct VmSpec {
     /// The resolution the virtual monitor reports as preferred (EDID).
     #[serde(default)]
     pub resolution: Option<(u32, u32)>,
+    /// A TPM 2.0 from swtpm (Linux hosts). Windows 11 wants one.
+    #[serde(default)]
+    pub tpm: bool,
+    /// UEFI Secure Boot with Microsoft's keys enrolled (Linux hosts: needs
+    /// SMM, which WHPX lacks).
+    #[serde(default)]
+    pub secure_boot: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

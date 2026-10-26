@@ -42,6 +42,36 @@ pub struct Patch {
     pub fullscreen: Option<bool>,
     /// "1920x1080", or "" for the guest's own choice.
     pub resolution: Option<String>,
+    pub tpm: Option<bool>,
+    pub secure_boot: Option<bool>,
+}
+
+/// Why this VM cannot have a TPM here, if it cannot.
+pub fn tpm_blocker() -> Option<&'static str> {
+    if cfg!(windows) {
+        Some("A TPM needs swtpm, which runs on Linux hosts only.")
+    } else if crate::qemu::swtpm().is_none() {
+        Some("Install swtpm to give VMs a TPM: sudo apt install swtpm (or dnf install swtpm).")
+    } else {
+        None
+    }
+}
+
+/// Why `spec` cannot use Secure Boot here, if it cannot.
+pub fn secure_boot_blocker(spec: &VmSpec) -> Option<&'static str> {
+    if spec.firmware != engine::Firmware::Uefi {
+        return Some("Secure Boot needs UEFI; this VM starts with the BIOS.");
+    }
+    let Ok(q) = crate::qemu::Qemu::locate() else {
+        return Some("QEMU was not found.");
+    };
+    if q.accel == bvmm::Accel::Whp {
+        Some("Secure Boot needs SMM, which Windows' hypervisor platform lacks.")
+    } else if q.find_secure_uefi().is_none() {
+        Some("Secure Boot firmware was not found: install ovmf (Debian/Ubuntu) or edk2-ovmf (Fedora).")
+    } else {
+        None
+    }
 }
 
 pub fn parse_resolution(s: &str) -> Result<Option<(u32, u32)>> {
@@ -111,6 +141,30 @@ pub fn apply(name: &str, host: &Host, patch: &Patch) -> Result<VmRecord> {
     }
     if let Some(r) = &patch.resolution {
         spec.resolution = parse_resolution(r)?;
+    }
+    if let Some(t) = patch.tpm {
+        if t {
+            if let Some(why) = tpm_blocker() {
+                bail!("{why}");
+            }
+        }
+        spec.tpm = t;
+    }
+    if let Some(sb) = patch.secure_boot.filter(|&sb| sb != spec.secure_boot) {
+        if sb {
+            if let Some(why) = secure_boot_blocker(spec) {
+                bail!("{why}");
+            }
+        }
+        // The two firmwares keep different variables (Secure Boot's has
+        // Microsoft's keys): start fresh from the right template, keeping
+        // the old store beside it. Boot entries go with it; Windows and
+        // Linux installers still boot through \EFI\BOOT\BOOTX64.EFI.
+        let vars = store::vm_dir(name).join("efivars.fd");
+        if vars.is_file() {
+            fs::rename(&vars, store::vm_dir(name).join("efivars.fd.previous"))?;
+        }
+        spec.secure_boot = sb;
     }
     // Hugepages only while the reserved pool still covers the memory.
     let sizing = Preset::parse(&rec.preset).map(|p| p.sizing(host));
@@ -320,6 +374,11 @@ pub struct Details {
     pub can_snapshot: bool,
     pub snapshots: Vec<Snapshot>,
     pub native: bool,
+    pub tpm: bool,
+    pub secure_boot: bool,
+    /// Why a TPM or Secure Boot cannot be switched on here.
+    pub tpm_blocker: Option<&'static str>,
+    pub secure_boot_blocker: Option<&'static str>,
     pub host_threads: usize,
     pub host_memory_mib: u64,
 }
@@ -363,6 +422,10 @@ pub fn details(name: &str, host: &Host) -> Result<Details> {
         can_snapshot: can_snapshot(s),
         snapshots: snapshots(name).unwrap_or_default(),
         native: rec.backend == "native",
+        tpm: s.tpm,
+        secure_boot: s.secure_boot,
+        tpm_blocker: tpm_blocker(),
+        secure_boot_blocker: secure_boot_blocker(s),
         host_threads: host.threads,
         host_memory_mib: host.memory_mib,
     })

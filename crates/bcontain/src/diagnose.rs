@@ -152,6 +152,7 @@ fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
         spec.display = Display::Basic;
     }
     let mut args = q.args(&spec, false)?;
+    qemu::start_helpers(&spec)?;
     if let Some(i) = args.iter().position(|a| a == "-display") {
         args[i + 1] = "none".into();
     }
