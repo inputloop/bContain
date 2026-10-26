@@ -122,7 +122,7 @@ fn probe(q: &Qemu, spec: &VmSpec, work: &Path) -> Result<Outcome> {
     let log = work.join("diagnose.log");
     let out = std::fs::File::create(&log)?;
     let mut child = q
-        .command(&args)
+        .background_command(&args)
         .stdin(Stdio::null())
         .stdout(out.try_clone()?)
         .stderr(out)

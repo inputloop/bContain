@@ -336,6 +336,21 @@ impl Qemu {
         Ok(a)
     }
 
+    /// [`Qemu::command`] for a VM that runs on its own: on Windows, without
+    /// a console window and outside the app's Ctrl+C group.
+    pub fn background_command(&self, args: &[String]) -> Command {
+        #[allow(unused_mut)]
+        let mut cmd = self.command(args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        }
+        cmd
+    }
+
     pub fn command(&self, args: &[String]) -> Command {
         let mut cmd = Command::new(&self.binary);
         cmd.args(args);
@@ -368,17 +383,10 @@ impl Hypervisor for Qemu {
         ]);
         let out = File::create(log).with_context(|| format!("creating {}", log.display()))?;
         writeln!(&out, "# {} {}", self.binary.display(), shell_join(&args))?;
-        let mut cmd = self.command(&args);
+        let mut cmd = self.background_command(&args);
         cmd.stdin(Stdio::null())
             .stdout(out.try_clone()?)
             .stderr(out);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        }
         let mut child = cmd
             .spawn()
             .with_context(|| format!("starting {}", self.binary.display()))?;
