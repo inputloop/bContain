@@ -209,6 +209,9 @@ QEMU's window can show two placeholder messages:
 Confirmed on the reference laptop (i9-12900H, WHP, QEMU 11.1): Tiny Core
 17.1 (`TinyCore-current.iso`) froze at "Loading extensions..." in automatic
 mode, and boots to its desktop in **compatibility (classic PC)** mode.
+With 10 vCPUs it later stopped with QEMU's *failed to get xsave state: No
+error*, a QEMU 11 WHPX problem. Compatibility mode now hides XSAVE and AVX
+from the guest, so QEMU never takes that path.
 | *Display output is not active* | The guest turned its display off. | Fixed by making the basic display a standard VGA card; rebuild if you still see it. |
 
 If a VM stops with an error, the Machines list shows it in red under the

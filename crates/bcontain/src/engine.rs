@@ -93,7 +93,8 @@ pub enum AccelMode {
     #[default]
     Auto,
     /// WHPX with QEMU's userspace APIC (`kernel-irqchip=off`) on classic PC
-    /// hardware (i440FX, IDE, e1000, UHCI: no MSI). For Windows builds where
+    /// hardware (i440FX, IDE, e1000, UHCI: no MSI), and a CPU without XSAVE or
+    /// AVX (QEMU 11's WHPX XSAVE sync fails on some Windows builds). For Windows builds where
     /// the default hangs before the BIOS shows anything, and for small or old
     /// guests.
     Compat,

@@ -120,13 +120,22 @@ impl Qemu {
             // when Windows offers it. Its userspace APIC (Compat) aborts some
             // guests (Tiny Core), while the in-kernel one hangs some Windows
             // builds before the BIOS runs. Hence the per-VM choice.
-            Accel::Whp if spec.accel_mode == AccelMode::Compat => {
-                push(&["-accel", "whpx,kernel-irqchip=off", "-cpu", "max"])
-            }
-            Accel::Whp => push(&["-accel", "whpx", "-cpu", "max"]),
-            Accel::Kvm => push(&["-accel", "kvm", "-cpu", "host"]),
-            Accel::None => push(&["-accel", "tcg,thread=multi", "-cpu", "max"]),
+            Accel::Whp if pc_hw => push(&["-accel", "whpx,kernel-irqchip=off"]),
+            Accel::Whp => push(&["-accel", "whpx"]),
+            Accel::Kvm => push(&["-accel", "kvm"]),
+            Accel::None => push(&["-accel", "tcg,thread=multi"]),
         }
+        // Compatibility mode hides XSAVE, and the AVX family that needs it,
+        // from the guest. QEMU 11's WHPX code syncs the XSAVE area whenever
+        // the guest has enabled it, and some Windows builds return it empty,
+        // which kills QEMU ("failed to get xsave state: No error"). Old and
+        // small guests do not need AVX.
+        let cpu = match (accel, pc_hw) {
+            (_, true) => "max,-xsave,-avx,-avx2,-fma,-f16c,-avx-vnni,-vaes,-vpclmulqdq",
+            (Accel::Kvm, false) => "host",
+            _ => "max",
+        };
+        push(&["-cpu", cpu]);
         let smp = format!("{0},sockets=1,cores={0},threads=1", spec.cpus);
         push(&["-smp", &smp]);
         let mem = format!("{}M", spec.memory_mib);
