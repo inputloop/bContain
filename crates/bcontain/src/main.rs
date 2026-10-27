@@ -66,6 +66,10 @@ enum Cmd {
         /// makes a subfolder named after the VM there.
         #[arg(long)]
         storage: Option<PathBuf>,
+        /// alphaOS: install it onto a new disk (--disk-size, default 32G) on
+        /// the first start, instead of running it live from the ISO.
+        #[arg(long)]
+        install: bool,
         /// Command to run instead of the image's default (containers).
         #[arg(last = true)]
         command: Vec<String>,
@@ -324,6 +328,7 @@ impl Tune {
             }),
             legacy_devices: self.legacy_devices,
             windows: self.windows,
+            install: false,
             storage: None,
             ephemeral: false,
             ports: self
@@ -394,6 +399,7 @@ fn real_main() -> Result<()> {
             tune,
             disk_size,
             storage,
+            install,
             command,
         } => {
             let host = Host::detect();
@@ -401,6 +407,7 @@ fn real_main() -> Result<()> {
             opts.command = command;
             opts.disk_mib = disk_size.as_deref().map(ops::parse_mib).transpose()?;
             opts.storage = storage;
+            opts.install = install;
             let rec = ops::create(&opts, &host, true, &mut say)?;
             println!(
                 "created `{}`: {} vCPU, {} MiB, {:?} display (preset {})",
@@ -612,6 +619,42 @@ fn real_main() -> Result<()> {
             }
             let hv = engine::backend(&rec.backend)?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+            if rec.spec.alphaos_install {
+                // Installing onto its disk: wait for the installer instead,
+                // until it has finished and powered the VM off.
+                let mut last = String::new();
+                let s = loop {
+                    let running = store::running(&name, hv.as_ref()).is_some();
+                    let s = ops::install_status(&rec.spec);
+                    if let Some(s) = &s {
+                        let line = format!("  {}% {}", s.percent, s.step);
+                        if line != last {
+                            println!("{line}");
+                            last = line;
+                        }
+                    }
+                    let busy = running && s.as_ref().is_none_or(|s| s.state == "installing");
+                    if !busy || std::time::Instant::now() >= deadline {
+                        break s;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                };
+                return match s.map(|s| (s.state, s.step)) {
+                    Some(("installed", _)) => {
+                        println!("alphaOS is installed on its disk; `bcontain start {name}` starts it from there");
+                        Ok(())
+                    }
+                    Some(("failed", why)) => bail!("alphaOS's installer stopped: {why}"),
+                    _ if store::running(&name, hv.as_ref()).is_some() => {
+                        bail!(
+                            "still installing; `bcontain receipt {name} --wait 1800` waits for it"
+                        )
+                    }
+                    _ => {
+                        bail!("`{name}` is set to install alphaOS: `bcontain start {name}` does it")
+                    }
+                };
+            }
             let r = loop {
                 let running = store::running(&name, hv.as_ref()).is_some();
                 let r = ops::receipt(&rec.spec, running);

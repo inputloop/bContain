@@ -130,6 +130,12 @@ pub struct VmSpec {
     /// Host USB devices this VM takes over while it runs.
     #[serde(default)]
     pub usb: Vec<crate::usb::UsbDevice>,
+    /// alphaOS is installing itself onto the VM's first disk: QEMU's
+    /// firmware setting `opt/org.inputloop.alphaos/install` names that
+    /// disk's serial, which alphaOS's installer looks for. Cleared, with the
+    /// ISO, once the install has finished.
+    #[serde(default)]
+    pub alphaos_install: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

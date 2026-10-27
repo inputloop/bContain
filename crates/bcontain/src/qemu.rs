@@ -298,6 +298,7 @@ impl Qemu {
         // With an installer attached, boot order is explicit: installer
         // first, then the other disks. (`bootindex` overrides `-boot`.)
         let has_installer = spec.disks.iter().any(|d| d.installer);
+        let alphaos_target = spec.disks.iter().position(|d| !d.cdrom);
         let mut next_boot = 1;
         let mut usb_controller = false;
         // virtio disks get their own I/O thread, so disk requests are not
@@ -361,6 +362,17 @@ impl Qemu {
                     format!("virtio-blk-pci,drive=disk{i},iothread=io0")
                 }
             };
+            // The disk alphaOS installs onto carries the serial its installer
+            // was told to look for (see the firmware setting below).
+            if spec.alphaos_install && Some(i) == alphaos_target {
+                match dev.find(",serial=") {
+                    Some(at) => {
+                        let end = dev[at + 1..].find(',').map_or(dev.len(), |e| at + 1 + e);
+                        dev.replace_range(at..end, ",serial=alphaos-target");
+                    }
+                    None => dev.push_str(",serial=alphaos-target"),
+                }
+            }
             if has_installer {
                 let index = if d.installer { 0 } else { next_boot };
                 if !d.installer {
@@ -445,6 +457,15 @@ impl Qemu {
                 "-smbios",
                 "type=1,manufacturer=bContain,product=bContain VM",
             ]);
+            // Ask alphaOS to install itself onto the disk with this serial.
+            // Only a VM's host can set this, so the live system never
+            // erases a disk unasked.
+            if spec.alphaos_install && alphaos_target.is_some() {
+                push(&[
+                    "-fw_cfg",
+                    "name=opt/org.inputloop.alphaos/install,string=alphaos-target",
+                ]);
+            }
         }
         if spec.display != Display::Headless {
             if let Some((w, h)) = spec.resolution {
@@ -943,6 +964,7 @@ mod tests {
             secure_boot: false,
             shared_folder: None,
             usb: Vec::new(),
+            alphaos_install: false,
         }
     }
 
@@ -984,6 +1006,14 @@ mod tests {
         let a = q.args(&s, false).unwrap().join(" ");
         assert!(!a.contains("serial.log"));
         assert!(a.contains("-serial stdio"));
+        // Installing: the first disk carries the serial the installer looks
+        // for, and the firmware setting names it.
+        s.alphaos_install = true;
+        s.display = Display::Basic;
+        let a = q.args(&s, false).unwrap().join(" ");
+        assert!(a.contains("virtio-blk-pci,drive=disk0,iothread=io0,serial=alphaos-target"));
+        assert!(a.contains("-fw_cfg name=opt/org.inputloop.alphaos/install,string=alphaos-target"));
+        assert!(!a.contains("disk1,serial=alphaos-target"));
         // Other guests keep QEMU's own serial console.
         let a = q.args(&spec(), false).unwrap().join(" ");
         assert!(!a.contains("serial.log") && !a.contains("-smbios"));

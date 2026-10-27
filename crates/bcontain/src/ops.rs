@@ -48,6 +48,8 @@ pub struct CreateOptions {
     /// Put the VM's disks in `<storage>/<name>` (any drive) instead of the
     /// VM's folder in the data directory.
     pub storage: Option<PathBuf>,
+    /// alphaOS only: install it onto a new disk instead of running it live.
+    pub install: bool,
 }
 
 /// What `image` resolved to.
@@ -173,6 +175,8 @@ impl<R: std::io::Read> std::io::Read for CountingReader<R> {
 
 /// The memory alphaOS's desktop needs (it uses about 530 MB of it).
 pub const ALPHAOS_MIN_MIB: u64 = 2048;
+/// The smallest disk alphaOS's installer takes (8 GB, in MiB, rounded up).
+const ALPHAOS_INSTALL_MIN_MIB: u64 = 7630;
 
 /// SteamOS's recovery image (`steamdeck-repair-*.img[.bz2]`): a USB-stick
 /// image whose "Re-image Steam Deck" installer writes to an NVMe drive.
@@ -274,6 +278,7 @@ pub fn create(
         secure_boot: false,
         shared_folder: None,
         usb: Vec::new(),
+        alphaos_install: false,
     };
     if opts.gpu {
         spec.gpu = Some(gpu_for_new_vm(&dir, log)?);
@@ -339,7 +344,11 @@ pub fn create(
             // alphaOS runs live from its disc and never writes to a disk, so
             // it gets none unless asked. Its serial console carries the boot
             // receipt, which bContain keeps and reads back.
-            log("alphaOS live ISO: runs from the disc, no disk needed".into());
+            log(if opts.install {
+                "alphaOS live ISO: it installs itself onto a new disk".into()
+            } else {
+                "alphaOS live ISO: runs from the disc, no disk needed".into()
+            });
             spec.guest = GuestOs::AlphaOs;
             if opts.cpus.is_none() {
                 spec.cpus = spec.cpus.clamp(2, 4).min(host.threads as u32);
@@ -365,9 +374,35 @@ pub fn create(
                 cdrom: true,
                 ephemeral: false,
                 bus: DiskBus::Auto,
-                installer: false,
+                // Installing: the ISO boots first until the install is done.
+                installer: opts.install,
             });
-            if let Some(size) = opts.disk_mib.filter(|&s| s > 0) {
+            if opts.install {
+                // alphaOS installs itself onto this disk on the first start
+                // (its installer erases it), powers off, and from then on
+                // starts from it, keeping its changes.
+                let size = opts.disk_mib.filter(|&s| s > 0).unwrap_or(32 * 1024);
+                if size < ALPHAOS_INSTALL_MIN_MIB {
+                    bail!("alphaOS needs a disk of at least 8G to install onto");
+                }
+                let disk = disks_dir.join("alphaos.qcow2");
+                report_space(&disks_dir, size, log);
+                log(format!("creating {} GiB disk to install onto", size / 1024));
+                qemu_img_create(&disk, size)?;
+                spec.disks.insert(
+                    0,
+                    Disk {
+                        path: disk,
+                        format: DiskFormat::Qcow2,
+                        cdrom: false,
+                        ephemeral: false,
+                        bus: DiskBus::Auto,
+                        installer: false,
+                    },
+                );
+                spec.alphaos_install = true;
+                log("  on the first start alphaOS installs itself onto that disk and powers off; start it again to use it".into());
+            } else if let Some(size) = opts.disk_mib.filter(|&s| s > 0) {
                 let disk = disks_dir.join("disk.qcow2");
                 report_space(&disks_dir, size, log);
                 log(format!(
@@ -388,7 +423,9 @@ pub fn create(
                     },
                 );
             }
-            log("  everything changed inside it is gone when it stops, as on a USB stick".into());
+            if !opts.install {
+                log("  everything changed inside it is gone when it stops, as on a USB stick (--install keeps them)".into());
+            }
             log("  its boot receipt shows in the Machines list (`bcontain receipt NAME`)".into());
         }
         Resolved::Disk(path, DiskFormat::Iso)
@@ -571,6 +608,9 @@ pub fn create(
         }
     }
 
+    if opts.install && spec.guest != GuestOs::AlphaOs {
+        bail!("--install is for the alphaOS ISO; other ISOs get a disk to install onto anyway");
+    }
     let engine = opts.engine.clone().unwrap_or_else(|| "qemu".into());
     match engine.as_str() {
         "qemu" => {}
@@ -737,6 +777,12 @@ fn start_inner(name: &str) -> Result<(engine::Running, Option<BootKeys>)> {
     if store::running(name, hv.as_ref()).is_some() {
         bail!("`{name}` is already running");
     }
+    // alphaOS installed itself last time (its serial log says so, and it is
+    // read before QEMU starts a new one): take the ISO out and start it from
+    // its disk.
+    if finish_alphaos_install(&mut rec) {
+        store::save(&rec)?;
+    }
     gpu_acquire(&rec.spec)?;
     let r = match hv.launch(&rec.spec, &store::log_path(name)) {
         Ok(r) => r,
@@ -894,6 +940,8 @@ pub struct VmView {
     pub gpu: bool,
     /// alphaOS VMs: what this boot's receipt says so far.
     pub receipt: Option<Receipt>,
+    /// alphaOS VMs installing themselves: how far the install has got.
+    pub install: Option<InstallStatus>,
 }
 
 pub fn views() -> Result<Vec<VmView>> {
@@ -921,6 +969,7 @@ pub fn views() -> Result<Vec<VmView>> {
             diagnosing: crate::diagnose::busy(&r.spec.name),
             gpu: r.spec.gpu.is_some(),
             receipt: receipt(&r.spec, state == store::State::Running),
+            install: install_status(&r.spec),
             last_error: (state == store::State::Stopped)
                 .then(|| last_error(&store::log_path(&r.spec.name)))
                 .flatten(),
@@ -997,6 +1046,69 @@ pub fn parse_receipt(text: &str, running: bool) -> Option<Receipt> {
         fails,
         lines,
     })
+}
+
+/// How alphaOS's installer is getting on, from its lines on the serial
+/// console (`alphaos-install: 45% copying the system`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct InstallStatus {
+    /// `installing`, `installed` or `failed`.
+    pub state: &'static str,
+    pub percent: u32,
+    /// The installer's last step, or why it stopped.
+    pub step: String,
+}
+
+pub fn parse_install(text: &str) -> Option<InstallStatus> {
+    const TAG: &str = "alphaos-install: ";
+    let mut st: Option<InstallStatus> = None;
+    for raw in text.lines() {
+        let Some(at) = raw.find(TAG) else { continue };
+        let line = raw[at + TAG.len()..].trim_end();
+        let s = st.get_or_insert(InstallStatus {
+            state: "installing",
+            percent: 0,
+            step: String::new(),
+        });
+        if line == "ALPHAOS-INSTALL ok" {
+            s.state = "installed";
+            s.percent = 100;
+        } else if let Some(why) = line.strip_prefix("ALPHAOS-INSTALL FAIL ") {
+            s.state = "failed";
+            s.step = why.to_string();
+        } else if let Some((pct, step)) = line.split_once("% ") {
+            if let Ok(p) = pct.parse() {
+                s.percent = p;
+                s.step = step.to_string();
+            }
+        }
+    }
+    st
+}
+
+/// The install's progress for an alphaOS VM that is installing itself.
+pub fn install_status(spec: &VmSpec) -> Option<InstallStatus> {
+    if !spec.alphaos_install {
+        return None;
+    }
+    // A headless VM's serial console is its backend log.
+    let path = if spec.display == Display::Headless {
+        store::log_path(&spec.name)
+    } else {
+        store::serial_log_path(&spec.name)
+    };
+    parse_install(&String::from_utf8_lossy(&fs::read(path).ok()?))
+}
+
+/// Once alphaOS has installed itself, drop the ISO and the install setting
+/// so the VM starts from its disk. Returns whether anything changed.
+pub fn finish_alphaos_install(rec: &mut VmRecord) -> bool {
+    if !install_status(&rec.spec).is_some_and(|s| s.state == "installed") {
+        return false;
+    }
+    rec.spec.disks.retain(|d| !d.cdrom);
+    rec.spec.alphaos_install = false;
+    true
 }
 
 /// An alphaOS VM's receipt for its current (or last) boot; `None` for other
@@ -1237,6 +1349,28 @@ mod tests {
         );
         fs::write(&p, "# qemu-system-x86_64 -name t\nbooted fine\n").unwrap();
         assert!(last_error(&p).is_none());
+    }
+
+    #[test]
+    fn reads_alphaos_installs() {
+        assert!(parse_install("alphaos-receipt: ok   C4OK\n").is_none());
+        let going = "alphaos-install: 0% the VM host asked\r\nalphaos-install: 41% copying the system (900 of 2000 files)\r\n";
+        let s = parse_install(going).unwrap();
+        assert_eq!((s.state, s.percent), ("installing", 41));
+        assert_eq!(s.step, "copying the system (900 of 2000 files)");
+        let s = parse_install(&format!(
+            "{going}alphaos-install: 100% done\nalphaos-install: ALPHAOS-INSTALL ok\n"
+        ))
+        .unwrap();
+        assert_eq!((s.state, s.percent), ("installed", 100));
+        let s = parse_install(&format!(
+            "{going}alphaos-install: ALPHAOS-INSTALL FAIL no disk with serial x\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            (s.state, s.step.as_str()),
+            ("failed", "no disk with serial x")
+        );
     }
 
     #[test]

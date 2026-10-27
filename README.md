@@ -229,6 +229,31 @@ bcontain start alphaos
 bcontain receipt alphaos --wait 900     # exits 0 when the receipt says ok
 ```
 
+**Installing alphaOS onto a disk.** Live, alphaOS forgets everything at
+power-off. Tick **Install alphaOS onto a disk** when adding it (or pass
+`--install`) and it keeps your changes:
+
+1. bContain makes a disk (32G unless you set **New disk size**, at least 8G)
+   and boots the ISO. It tells alphaOS which disk to use through a QEMU
+   firmware setting, `opt/org.inputloop.alphaos/install`, naming the disk's
+   serial (`alphaos-target`). Only a VM's host can set that, so alphaOS never
+   erases a disk it was not asked to.
+2. alphaOS installs itself onto that disk, with no questions, and powers the
+   VM off. The Machines list shows its progress ("installing: 41% copying
+   the system").
+3. Start it again: bContain takes the ISO out, and alphaOS starts from its
+   disk. Its receipt then says `installed on disk: /dev/vda3`.
+
+```
+bcontain create alphaos alphaos-live-ubuntu24.04-amd64.iso --install --disk-size 64G
+bcontain start alphaos
+bcontain receipt alphaos --wait 3600    # waits for the install; exits 0 when it is done
+bcontain start alphaos                  # now from its disk
+```
+
+The installed system boots under BIOS or UEFI, so the VM's firmware can be
+either.
+
 On Windows, alphaOS's own builder (`Build-alphaOS-ISO.cmd`) offers to boot
 the ISO it just built in bContain when it finds `bContain.exe` beside the
 alphaOS folder, in `bContain\dist\`, or on `PATH`.
@@ -428,7 +453,7 @@ line.
 | *(no command)* | Open the app window. This is what double-clicking does |
 | `doctor [--json]` | Check the host against the reference build |
 | `presets` | Show each preset's sizing on this host |
-| `create NAME IMAGE [opts] [-- CMD…]` | Define a VM or container. Creating from an ISO adds a blank disk (`--disk-size`, default 64G) |
+| `create NAME IMAGE [opts] [-- CMD…]` | Define a VM or container. Creating from an ISO adds a blank disk (`--disk-size`, default 64G); for alphaOS, `--install` installs it onto one |
 | `start NAME [--attach]` | Boot in the background, or attached to the serial console |
 | `stop NAME [--force]` | ACPI shutdown, or pull the plug |
 | `list` · `info NAME` · `logs NAME` | Inspect. `info` prints the exact QEMU command line |
@@ -438,7 +463,7 @@ line.
 | `kernel fetch / install PATH / path` | Manage the guest kernel for containers |
 | `gpu [status \| release NAME \| dump-vbios FILE \| set-rom NAME FILE]` | GPU passthrough: check this host, give a GPU back, save or attach a video BIOS |
 | `eject NAME` | Detach a VM's ISO or SteamOS installer so it boots what it installed |
-| `receipt NAME [--wait SECS]` | Show an alphaOS VM's boot receipt; exits 0 when it says ok |
+| `receipt NAME [--wait SECS]` | Show an alphaOS VM's boot receipt, or its install's progress while it installs; exits 0 when it says ok |
 | `diagnose NAME` | Boot a stopped VM several ways without a window and report which reach the firmware's screen |
 | `hypervisor-test` | Check, step by step, that bContain's own hypervisor works on this machine |
 | `ui [--port N] [--open]` | Web dashboard |
@@ -446,7 +471,7 @@ line.
 Options shared by `create` and `run`: `--engine qemu|native`, `--accel auto|compat|software`, `--gpu`, `--preset`, `--cpus`, `--memory 16G`,
 `--display virgl|basic|headless`, `--firmware bios|uefi`, `--legacy-devices`, `--windows`,
 `-p HOST:GUEST[/udp]`, `-e KEY=VALUE`, `--kernel`.
-`create` also takes `--disk-size SIZE` and `--storage FOLDER`.
+`create` also takes `--disk-size SIZE`, `--storage FOLDER` and, for alphaOS, `--install`.
 `set NAME` changes a stopped VM (see [Settings](#changing-a-vm-later-settings)); `resize`, `snapshot` and `usb` are listed there too.
 
 ## How containers run

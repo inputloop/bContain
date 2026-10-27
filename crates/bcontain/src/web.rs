@@ -325,6 +325,7 @@ fn route(req: &mut Request, method: &Method, url: &str, host: &Host) -> Routed {
                     .map_err(bad)?,
                 legacy_devices: body.legacy_devices,
                 windows: body.windows,
+                install: body.install,
                 storage: body
                     .storage
                     .as_deref()
@@ -438,6 +439,9 @@ struct CreateBody {
     legacy_devices: bool,
     #[serde(default)]
     windows: bool,
+    /// alphaOS: install it onto a new disk.
+    #[serde(default)]
+    install: bool,
     #[serde(default)]
     storage: Option<String>,
     disk_size: Option<String>,
