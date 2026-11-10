@@ -40,8 +40,30 @@ impl Native {
             kernel,
             initrd,
             cmdline: native_cmdline(&k.cmdline),
+            disks: native_disks(std::env::var("BCONTAIN_NATIVE_DISKS").ok().as_deref()),
         })
     }
+}
+
+/// `BCONTAIN_NATIVE_DISKS` lists raw disk images for the native engine,
+/// separated by `;`, each optionally ending in `,ro`. The first is
+/// `/dev/vda` in the guest. For bring-up; the CLI does not offer it yet.
+fn native_disks(spec: Option<&str>) -> Vec<bvmm::DiskConfig> {
+    spec.unwrap_or_default()
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.strip_suffix(",ro") {
+            Some(path) => bvmm::DiskConfig {
+                path: path.into(),
+                read_only: true,
+            },
+            None => bvmm::DiskConfig {
+                path: s.into(),
+                read_only: false,
+            },
+        })
+        .collect()
 }
 
 /// The QEMU command line configures eth0 with `ip=`; the native VMM has no
@@ -219,6 +241,19 @@ mod tests {
         assert_eq!(
             native_cmdline_with("console=ttyS0 quiet loglevel=3", Some("  ")),
             "console=ttyS0 quiet loglevel=3"
+        );
+    }
+
+    #[test]
+    fn parses_native_disks() {
+        assert!(native_disks(None).is_empty());
+        assert!(native_disks(Some(" ; ")).is_empty());
+        let d = native_disks(Some("a.img; C:\\vm\\b.img,ro"));
+        assert_eq!(d.len(), 2);
+        assert_eq!((d[0].path.to_str(), d[0].read_only), (Some("a.img"), false));
+        assert_eq!(
+            (d[1].path.to_str(), d[1].read_only),
+            (Some("C:\\vm\\b.img"), true)
         );
     }
 

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use kvm_bindings::{
-    kvm_fpu, kvm_pit_config, kvm_regs, kvm_segment, kvm_userspace_memory_region,
+    kvm_fpu, kvm_msi, kvm_pit_config, kvm_regs, kvm_segment, kvm_userspace_memory_region,
     KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
 use kvm_ioctls::{Kvm, VcpuExit};
@@ -73,6 +73,17 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         let _ = line_vm.set_irq_line(irq as u32, true);
         let _ = line_vm.set_irq_line(irq as u32, false);
     })));
+
+    let msi_vm = vm.clone();
+    devices.set_msi_route(Box::new(move |address, data| {
+        let msi = kvm_msi {
+            address_lo: address as u32,
+            address_hi: (address >> 32) as u32,
+            data,
+            ..Default::default()
+        };
+        let _ = msi_vm.signal_msi(msi);
+    }));
 
     let mut vcpu = vm.create_vcpu(0).map_err(err("creating the vCPU"))?;
     let cpuid = kvm

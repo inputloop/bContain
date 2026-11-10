@@ -24,6 +24,7 @@ pub mod layout;
 pub mod memory;
 pub mod mptable;
 pub mod platform;
+pub mod virtio;
 
 use devices::Devices;
 use memory::GuestMemory;
@@ -171,16 +172,31 @@ pub enum Outcome {
 
 /// Kernel parameters the native platform needs on top of the caller's:
 /// legacy-device probes that would only waste boot time, reboot through the
-/// keyboard controller (how our init exits), no PCI/ACPI (none emulated),
-/// and no IO-APIC timer check (the timer is the local APIC's).
-pub const KERNEL_PARAMS: &str = "reboot=k panic=-1 pci=off acpi=off no_timer_check tsc=reliable \
+/// keyboard controller (how our init exits), no ACPI (none emulated), and no
+/// IO-APIC timer check (the timer is the local APIC's).
+pub const KERNEL_PARAMS: &str = "reboot=k panic=-1 acpi=off no_timer_check tsc=reliable \
      i8042.noaux i8042.nomux i8042.nopnp i8042.dumbkbd";
+/// Without PCI devices the kernel is told not to look for a bus at all.
+const NO_PCI: &str = "pci=off";
+/// With them, it is told how to reach configuration space: there is no
+/// firmware to say so.
+const WITH_PCI: &str = "pci=conf1";
 
+/// A disk image presented to the guest as a virtio block device.
+#[derive(Debug, Clone)]
+pub struct DiskConfig {
+    pub path: std::path::PathBuf,
+    pub read_only: bool,
+}
+
+#[derive(Default)]
 pub struct VmConfig {
     pub memory_mib: u64,
     pub kernel: Vec<u8>,
     pub initrd: Option<Vec<u8>>,
     pub cmdline: String,
+    /// Raw disk images, in order: the first is `/dev/vda` in a Linux guest.
+    pub disks: Vec<DiskConfig>,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -197,12 +213,22 @@ pub fn run_linux(
             probe.accel, probe.detail
         )));
     }
-    let mem = GuestMemory::new(cfg.memory_mib << 20)?;
+    let mem = Arc::new(GuestMemory::new(cfg.memory_mib << 20)?);
     const CPUS: u8 = 1;
     mptable::write(&mem, CPUS)?;
-    let cmdline = format!("{} {}", cfg.cmdline.trim(), KERNEL_PARAMS);
+    let mut bus = devices::pci::PciBus::new(mem.clone());
+    for disk in &cfg.disks {
+        let blk = virtio::blk::Block::open(&disk.path, disk.read_only)?;
+        bus.add_virtio(Box::new(blk));
+    }
+    let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
+    let cmdline = format!("{} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci);
     let boot = boot::load_linux(&mem, &cfg.kernel, cfg.initrd.as_deref(), &cmdline)?;
-    let devices = Arc::new(Devices::new(console, platform::NEEDS_IOAPIC, CPUS));
+    let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, CPUS);
+    if !bus.is_empty() {
+        devices = devices.with_pci(bus);
+    }
+    let devices = Arc::new(devices);
     if let Some(mut input) = input {
         let d = devices.clone();
         std::thread::spawn(move || {

@@ -4,6 +4,7 @@
 
 pub mod cmos;
 pub mod ioapic;
+pub mod pci;
 pub mod serial;
 
 use std::io::Write;
@@ -13,6 +14,7 @@ use std::sync::{Mutex, OnceLock};
 use crate::layout::IOAPIC_ADDR;
 use cmos::Cmos;
 use ioapic::{Interrupt, IoApic};
+use pci::PciBus;
 use serial::Serial;
 
 pub const COM1: u16 = 0x3f8;
@@ -32,6 +34,10 @@ pub struct Devices {
     /// Present when the platform has no in-kernel I/O APIC.
     ioapic: Option<Mutex<IoApic>>,
     route: OnceLock<IrqRoute>,
+    /// The PCI bus, when the machine has PCI devices.
+    pci: Option<Mutex<PciBus>>,
+    /// How an MSI message (address, data) reaches a local APIC.
+    msi: OnceLock<Box<dyn Fn(u64, u32) + Send + Sync>>,
     reset: AtomicBool,
 }
 
@@ -42,7 +48,29 @@ impl Devices {
             cmos: Mutex::new(Cmos::default()),
             ioapic: emulate_ioapic.then(|| Mutex::new(IoApic::new(ioapic_id))),
             route: OnceLock::new(),
+            pci: None,
+            msi: OnceLock::new(),
             reset: AtomicBool::new(false),
+        }
+    }
+
+    /// Give the machine a PCI bus.
+    pub fn with_pci(mut self, bus: PciBus) -> Devices {
+        self.pci = Some(Mutex::new(bus));
+        self
+    }
+
+    pub fn has_pci(&self) -> bool {
+        self.pci.is_some()
+    }
+
+    pub fn set_msi_route(&self, route: Box<dyn Fn(u64, u32) + Send + Sync>) {
+        let _ = self.msi.set(route);
+    }
+
+    fn send_msi(&self, address: u64, data: u32) {
+        if let Some(f) = self.msi.get() {
+            f(address, data);
         }
     }
 
@@ -88,6 +116,9 @@ impl Devices {
                 v as u32
             }
             0x71 => self.cmos.lock().unwrap().read_data() as u32,
+            pci::CONFIG_ADDRESS..=0xcff if self.pci.is_some() => {
+                self.pci.as_ref().unwrap().lock().unwrap().io_in(port, size)
+            }
             // i8042: status "nothing to read", data 0.
             0x60 | 0x64 => 0,
             // No 8259 PIC behind an emulated I/O APIC: reading back the mask
@@ -97,7 +128,7 @@ impl Devices {
         }
     }
 
-    pub fn io_out(&self, port: u16, _size: u8, value: u32) {
+    pub fn io_out(&self, port: u16, size: u8, value: u32) {
         match port {
             COM1..=0x3ff => {
                 let edge = self
@@ -112,27 +143,50 @@ impl Devices {
             0x70 => self.cmos.lock().unwrap().write_index(value as u8),
             // Keyboard-controller reset pulse, or the PCI reset control register.
             0x64 if value as u8 == 0xfe => self.reset.store(true, Ordering::SeqCst),
-            0xcf9 if value & 0x04 != 0 => self.reset.store(true, Ordering::SeqCst),
+            // The reset control register is a byte at 0xcf9, inside the PCI
+            // configuration address port; a byte write there is never PCI.
+            0xcf9 if size == 1 => {
+                if value & 0x04 != 0 {
+                    self.reset.store(true, Ordering::SeqCst)
+                }
+            }
+            pci::CONFIG_ADDRESS..=0xcff => {
+                if let Some(bus) = &self.pci {
+                    bus.lock()
+                        .unwrap()
+                        .io_out(port, size, value, &|a, d| self.send_msi(a, d));
+                }
+            }
             _ => {}
         }
     }
 
-    pub fn mmio_read(&self, addr: u64, _size: u8) -> u64 {
+    pub fn mmio_read(&self, addr: u64, size: u8) -> u64 {
         match &self.ioapic {
             Some(io) if (IOAPIC_ADDR..IOAPIC_ADDR + 0x1000).contains(&addr) => {
-                io.lock().unwrap().mmio_read(addr - IOAPIC_ADDR) as u64
+                return io.lock().unwrap().mmio_read(addr - IOAPIC_ADDR) as u64;
             }
-            _ => u64::MAX,
+            _ => {}
         }
+        self.pci
+            .as_ref()
+            .and_then(|bus| bus.lock().unwrap().mmio_read(addr, size))
+            .unwrap_or(u64::MAX)
     }
 
-    pub fn mmio_write(&self, addr: u64, _size: u8, value: u64) {
+    pub fn mmio_write(&self, addr: u64, size: u8, value: u64) {
         if let Some(io) = &self.ioapic {
             if (IOAPIC_ADDR..IOAPIC_ADDR + 0x1000).contains(&addr) {
                 io.lock()
                     .unwrap()
                     .mmio_write(addr - IOAPIC_ADDR, value as u32);
+                return;
             }
+        }
+        if let Some(bus) = &self.pci {
+            bus.lock()
+                .unwrap()
+                .mmio_write(addr, size, value, &|a, d| self.send_msi(a, d));
         }
     }
 

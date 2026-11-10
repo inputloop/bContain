@@ -75,6 +75,26 @@ impl GuestMemory {
         Ok(())
     }
 
+    pub fn read_u16(&self, gpa: u64) -> Result<u16> {
+        let mut b = [0u8; 2];
+        self.read(gpa, &mut b)?;
+        Ok(u16::from_le_bytes(b))
+    }
+
+    pub fn write_u16(&self, gpa: u64, v: u16) -> Result<()> {
+        self.write(gpa, &v.to_le_bytes())
+    }
+
+    pub fn read_u32(&self, gpa: u64) -> Result<u32> {
+        let mut b = [0u8; 4];
+        self.read(gpa, &mut b)?;
+        Ok(u32::from_le_bytes(b))
+    }
+
+    pub fn write_u32(&self, gpa: u64, v: u32) -> Result<()> {
+        self.write(gpa, &v.to_le_bytes())
+    }
+
     pub fn write_u64(&self, gpa: u64, v: u64) -> Result<()> {
         self.write(gpa, &v.to_le_bytes())
     }

@@ -671,7 +671,7 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
     )?;
 
     let p = SendPartition(partition);
-    devices.set_irq_route(IrqRoute::Ioapic(Box::new(move |i: Interrupt| {
+    let deliver = move |i: Interrupt| {
         let p = p;
         let control = InterruptControl {
             control: (i.delivery_mode as u64 & 0xff)
@@ -683,7 +683,12 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         // SAFETY: valid partition; struct size passed alongside.
         let _ =
             unsafe { (api.request_interrupt)(p.0, &control, size_of::<InterruptControl>() as u32) };
-    })));
+    };
+    devices.set_irq_route(IrqRoute::Ioapic(Box::new(deliver)));
+    // An MSI message names its local APIC interrupt directly.
+    devices.set_msi_route(Box::new(move |address, data| {
+        deliver(crate::devices::pci::decode_msi(address, data))
+    }));
 
     let mut cb = CallbackContext {
         api,
