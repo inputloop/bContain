@@ -107,9 +107,12 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--touchscreen" => touchscreen = true,
             "--keyboard" => keyboard = true,
             "--sink-consoles" => {
-                cfg.sink_consoles = value(&mut args, &a)?
+                let n: u8 = value(&mut args, &a)?
                     .parse()
-                    .map_err(|_| "--sink-consoles needs a number".to_string())?
+                    .map_err(|_| "--sink-consoles needs a number".to_string())?;
+                cfg.consoles = (0..n)
+                    .map(|_| bvmm::virtio::console::Console::sink())
+                    .collect();
             }
             "--vsock" => {
                 cfg.vsock_cid = Some(

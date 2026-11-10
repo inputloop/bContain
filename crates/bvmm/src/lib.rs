@@ -206,9 +206,8 @@ pub struct VmConfig {
     pub display: Option<virtio::gpu::Display>,
     /// Input devices; keep each one's sender to push events.
     pub inputs: Vec<virtio::input::Input>,
-    /// Console ports with nobody at the other end (`/dev/hvc0` upwards in a
-    /// Linux guest), for guest software that needs the ports to exist.
-    pub sink_consoles: u8,
+    /// Console ports, `/dev/hvc0` upwards in a Linux guest, in order.
+    pub consoles: Vec<virtio::console::Console>,
     /// Give the guest a vsock address. No host services are offered yet.
     pub vsock_cid: Option<u64>,
     /// Give the guest a hardware random number source.
@@ -249,8 +248,8 @@ pub fn run_linux(
     for input in &cfg.inputs {
         bus.add_virtio(Box::new(input.clone()));
     }
-    for _ in 0..cfg.sink_consoles {
-        bus.add_virtio(Box::new(virtio::console::SinkConsole));
+    for console in &cfg.consoles {
+        bus.add_virtio(Box::new(console.clone()));
     }
     if let Some(cid) = cfg.vsock_cid {
         bus.add_virtio(Box::new(virtio::vsock::Vsock::new(cid)));

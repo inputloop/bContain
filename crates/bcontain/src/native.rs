@@ -50,7 +50,7 @@ impl Native {
             },
             display: None,
             inputs: Vec::new(),
-            sink_consoles: 0,
+            consoles: Vec::new(),
             vsock_cid: None,
             rng: false,
         })
