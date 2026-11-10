@@ -137,7 +137,16 @@ pub fn run_attached(spec: &VmSpec, interactive: bool) -> Result<i32> {
     let code = *code.lock().unwrap();
     Ok(match (outcome, code) {
         (_, Some(c)) => c,
-        (bvmm::Outcome::Reset, None) => 0,
+        (bvmm::Outcome::Reset, None) => {
+            // Our init always reports an exit code before it reboots, so a
+            // reset without one means the guest never got that far, or its
+            // console is not reaching us.
+            eprintln!(
+                "bcontain: the guest reset without reporting an exit code \
+                 (kernel panic before the console came up, or no serial console)"
+            );
+            1
+        }
         (bvmm::Outcome::Halted, None) => {
             eprintln!("bcontain: the guest halted before the container reported an exit code");
             1
