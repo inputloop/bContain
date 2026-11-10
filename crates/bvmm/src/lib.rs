@@ -199,6 +199,8 @@ pub struct VmConfig {
     pub disks: Vec<DiskConfig>,
     /// Virtual processors; 0 means 1. See [`platform::MAX_CPUS`].
     pub cpus: u8,
+    /// How the guest finds its clock.
+    pub clock: platform::ClockSource,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -230,7 +232,8 @@ pub fn run_linux(
         bus.add_virtio(Box::new(blk));
     }
     let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
-    let cmdline = format!("{} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci);
+    let clock = platform::clock_kernel_params(cfg.clock);
+    let cmdline = format!("{} {} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci, clock);
     let boot = boot::load_linux(&mem, &cfg.kernel, cfg.initrd.as_deref(), &cmdline)?;
     let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, cpus);
     if !bus.is_empty() {

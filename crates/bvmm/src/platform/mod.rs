@@ -46,3 +46,95 @@ pub fn run(
         ))
     }
 }
+
+/// How the guest kernel should find its clock on this platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClockSource {
+    /// The platform default: see [`clock_kernel_params`].
+    #[default]
+    Auto,
+    /// Leave it to the hypervisor's paravirtual interface (Hyper-V
+    /// enlightenments on WHP, kvm-clock on KVM), whatever the kernel supports.
+    Paravirtual,
+}
+
+/// Kernel parameters that give the guest a precise clock.
+///
+/// On KVM nothing is needed: kernels find kvm-clock or calibrate the TSC
+/// against KVM's PIT.
+///
+/// On WHP the guest is told it runs on Hyper-V. A kernel built with Hyper-V
+/// support then uses Hyper-V's clock. A kernel without it (Android's is one)
+/// still recognises Hyper-V, marks the TSC unstable because of that, has no
+/// Hyper-V clock driver to fall back on, and ends up counting timer ticks.
+/// So by default the kernel is told to ignore the hypervisor (`nopv`) and is
+/// given the TSC frequency directly, which works for both kinds of kernel:
+/// it then calibrates the local APIC timer against the TSC and uses the TSC
+/// as its clock.
+pub fn clock_kernel_params(clock: ClockSource) -> String {
+    #[cfg(windows)]
+    {
+        if clock == ClockSource::Auto {
+            if let Some(khz) = measure_tsc_khz() {
+                return format!("nopv tsc_early_khz={khz}");
+            }
+        }
+    }
+    let _ = clock;
+    String::new()
+}
+
+/// The host's TSC frequency in kHz, measured against the monotonic clock.
+/// Good to roughly one part in ten thousand; a guest that needs better
+/// should discipline its clock over the network, as real machines do.
+#[cfg(any(windows, test))]
+fn measure_tsc_khz() -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::time::{Duration, Instant};
+        let sample = |window: Duration| -> Option<u64> {
+            let t0 = Instant::now();
+            // SAFETY: RDTSC is available on every x86-64 processor.
+            let c0 = unsafe { core::arch::x86_64::_rdtsc() };
+            while t0.elapsed() < window {
+                std::hint::spin_loop();
+            }
+            let c1 = unsafe { core::arch::x86_64::_rdtsc() };
+            let nanos = t0.elapsed().as_nanos() as u64;
+            let ticks = c1.checked_sub(c0)?;
+            (nanos > 0).then(|| (ticks as u128 * 1_000_000 / nanos as u128) as u64)
+        };
+        // Two windows that must agree, so a thread descheduled mid-sample
+        // or a TSC that jumped is not believed.
+        let a = sample(Duration::from_millis(60))?;
+        let b = sample(Duration::from_millis(60))?;
+        let plausible = (500_000..=10_000_000).contains(&a);
+        let agree = a.abs_diff(b) * 2_000 < a;
+        (plausible && agree).then_some((a + b) / 2)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tsc_measurement_is_plausible_when_it_answers() {
+        // On a busy or virtualized test host the two samples may disagree,
+        // in which case no answer is the right answer.
+        if let Some(khz) = measure_tsc_khz() {
+            assert!((500_000..=10_000_000).contains(&khz), "{khz} kHz");
+        }
+    }
+
+    #[test]
+    fn paravirtual_clock_adds_no_parameters() {
+        assert_eq!(clock_kernel_params(ClockSource::Paravirtual), "");
+        #[cfg(not(windows))]
+        assert_eq!(clock_kernel_params(ClockSource::Auto), "");
+    }
+}
