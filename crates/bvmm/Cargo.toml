@@ -10,4 +10,5 @@ edition.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-ioctls = "0.25"
+libc = "0.2"
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }

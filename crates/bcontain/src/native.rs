@@ -41,6 +41,7 @@ impl Native {
             initrd,
             cmdline: native_cmdline(&k.cmdline),
             disks: native_disks(std::env::var("BCONTAIN_NATIVE_DISKS").ok().as_deref()),
+            cpus: spec.cpus.clamp(1, bvmm::platform::MAX_CPUS as u32) as u8,
         })
     }
 }

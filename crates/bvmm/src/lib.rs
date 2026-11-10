@@ -197,6 +197,8 @@ pub struct VmConfig {
     pub cmdline: String,
     /// Raw disk images, in order: the first is `/dev/vda` in a Linux guest.
     pub disks: Vec<DiskConfig>,
+    /// Virtual processors; 0 means 1. See [`platform::MAX_CPUS`].
+    pub cpus: u8,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -214,8 +216,14 @@ pub fn run_linux(
         )));
     }
     let mem = Arc::new(GuestMemory::new(cfg.memory_mib << 20)?);
-    const CPUS: u8 = 1;
-    mptable::write(&mem, CPUS)?;
+    let cpus = cfg.cpus.max(1);
+    if cpus > platform::MAX_CPUS {
+        return Err(Error::new(format!(
+            "this platform runs at most {} virtual processor(s) for now",
+            platform::MAX_CPUS
+        )));
+    }
+    mptable::write(&mem, cpus)?;
     let mut bus = devices::pci::PciBus::new(mem.clone());
     for disk in &cfg.disks {
         let blk = virtio::blk::Block::open(&disk.path, disk.read_only)?;
@@ -224,7 +232,7 @@ pub fn run_linux(
     let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
     let cmdline = format!("{} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci);
     let boot = boot::load_linux(&mem, &cfg.kernel, cfg.initrd.as_deref(), &cmdline)?;
-    let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, CPUS);
+    let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, cpus);
     if !bus.is_empty() {
         devices = devices.with_pci(bus);
     }
@@ -241,7 +249,7 @@ pub fn run_linux(
             }
         });
     }
-    let outcome = platform::run(&mem, &boot, devices.clone());
+    let outcome = platform::run(&mem, &boot, devices.clone(), cpus);
     devices.flush();
     outcome
 }
@@ -304,7 +312,7 @@ pub fn self_test(step: &mut dyn FnMut(&str)) -> Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
     let d = devices.clone();
     std::thread::spawn(move || {
-        let r = platform::run(&mem, &boot, d);
+        let r = platform::run(&mem, &boot, d, 1);
         let _ = tx.send(r);
     });
     let outcome = rx

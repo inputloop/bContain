@@ -28,7 +28,7 @@ impl GuestMemory {
         if size < 64 << 20 {
             return Err(Error::new("guest memory must be at least 64 MiB"));
         }
-        if size > MAX_SIZE || size % 4096 != 0 {
+        if size > MAX_SIZE || !size.is_multiple_of(4096) {
             return Err(Error::new(format!(
                 "guest memory must be a whole number of pages, at most {} GiB",
                 MAX_SIZE >> 30

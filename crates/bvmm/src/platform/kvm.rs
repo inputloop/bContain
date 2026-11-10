@@ -4,13 +4,15 @@
 //! interrupt controllers (PIC, I/O APIC, local APIC) and the PIT in the
 //! kernel, so only the slow legacy devices live in [`Devices`].
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use kvm_bindings::{
     kvm_fpu, kvm_msi, kvm_pit_config, kvm_regs, kvm_segment, kvm_userspace_memory_region,
     KVM_MAX_CPUID_ENTRIES, KVM_PIT_SPEAKER_DUMMY,
 };
-use kvm_ioctls::{Kvm, VcpuExit};
+use kvm_ioctls::{Kvm, VcpuExit, VcpuFd};
 
 use crate::boot::{BootState, Segment};
 use crate::devices::{Devices, IrqRoute};
@@ -44,7 +46,12 @@ fn segment(s: &Segment, unusable: bool) -> kvm_segment {
     }
 }
 
-pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result<Outcome> {
+pub fn run(
+    mem: &GuestMemory,
+    boot: &BootState,
+    devices: Arc<Devices>,
+    cpus: u8,
+) -> Result<Outcome> {
     let kvm = Kvm::new().map_err(err("opening /dev/kvm"))?;
     let vm = Arc::new(kvm.create_vm().map_err(err("creating the VM"))?);
     vm.set_tss_address(TSS_ADDR)
@@ -87,12 +94,89 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         let _ = msi_vm.signal_msi(msi);
     }));
 
-    let mut vcpu = vm.create_vcpu(0).map_err(err("creating the vCPU"))?;
     let cpuid = kvm
         .get_supported_cpuid(KVM_MAX_CPUID_ENTRIES)
         .map_err(err("reading CPUID"))?;
-    vcpu.set_cpuid2(&cpuid).map_err(err("setting CPUID"))?;
+    let mut vcpus = Vec::new();
+    for id in 0..cpus {
+        let mut vcpu = vm.create_vcpu(id as u64).map_err(err("creating a vCPU"))?;
+        let mut cpuid = cpuid.clone();
+        for e in cpuid.as_mut_slice() {
+            match e.function {
+                // Initial APIC ID, and how many logical processors there are.
+                1 => e.ebx = (e.ebx & 0x0000_ffff) | (cpus as u32) << 16 | (id as u32) << 24,
+                // x2APIC ID.
+                0xb | 0x1f => e.edx = id as u32,
+                _ => {}
+            }
+        }
+        vcpu.set_cpuid2(&cpuid).map_err(err("setting CPUID"))?;
+        if id == 0 {
+            set_boot_state(&mut vcpu, boot)?;
+        }
+        // The other processors wait, inside KVM, for the kernel's INIT and
+        // startup IPIs: that is what a vCPU with a non-zero ID does when the
+        // local APIC is in the kernel.
+        vcpus.push(vcpu);
+    }
 
+    install_kick_handler();
+    let stop = AtomicBool::new(false);
+    let (id_tx, id_rx) = mpsc::channel::<libc::pthread_t>();
+    let (done_tx, done_rx) = mpsc::channel::<Result<Outcome>>();
+    std::thread::scope(|scope| {
+        let count = vcpus.len();
+        for mut vcpu in vcpus {
+            let (id_tx, done_tx) = (id_tx.clone(), done_tx.clone());
+            let (devices, stop) = (&devices, &stop);
+            scope.spawn(move || {
+                // SAFETY: pthread_self has no preconditions.
+                let _ = id_tx.send(unsafe { libc::pthread_self() });
+                let _ = done_tx.send(run_vcpu(&mut vcpu, devices, stop));
+            });
+        }
+        let threads: Vec<libc::pthread_t> = id_rx.iter().take(count).collect();
+        // The first vCPU to finish decides how the run ended.
+        let outcome = done_rx
+            .recv()
+            .unwrap_or_else(|_| Err(Error::new("KVM: the vCPU threads vanished")));
+        stop.store(true, Ordering::SeqCst);
+        // A vCPU waiting inside KVM only notices `stop` when a signal
+        // interrupts it; keep nudging until every thread has reported.
+        let mut finished = 1;
+        while finished < count {
+            for t in &threads {
+                // SAFETY: the threads are alive until the scope ends.
+                unsafe { libc::pthread_kill(*t, kick_signal()) };
+            }
+            while done_rx.recv_timeout(Duration::from_millis(2)).is_ok() {
+                finished += 1;
+            }
+        }
+        outcome
+    })
+}
+
+fn kick_signal() -> libc::c_int {
+    libc::SIGRTMIN()
+}
+
+extern "C" fn kick_handler(_: libc::c_int) {}
+
+/// Make the kick signal interrupt a blocked `KVM_RUN` instead of killing the
+/// process or restarting the call.
+fn install_kick_handler() {
+    // SAFETY: a zeroed sigaction with a valid handler and no flags is well formed.
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = kick_handler as extern "C" fn(libc::c_int) as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(kick_signal(), &action, std::ptr::null_mut());
+    }
+}
+
+/// Put the boot processor in the state the loader computed.
+fn set_boot_state(vcpu: &mut VcpuFd, boot: &BootState) -> Result<()> {
     let mut sregs = vcpu.get_sregs().map_err(err("reading special registers"))?;
     sregs.cs = segment(&boot.cs, false);
     let ds = segment(&boot.ds, false);
@@ -122,10 +206,13 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         rflags: boot.rflags,
         ..Default::default()
     };
-    vcpu.set_regs(&regs).map_err(err("setting registers"))?;
+    vcpu.set_regs(&regs).map_err(err("setting registers"))
+}
 
+/// Run one vCPU until the guest resets, it fails, or `stop` is set.
+fn run_vcpu(vcpu: &mut VcpuFd, devices: &Devices, stop: &AtomicBool) -> Result<Outcome> {
     loop {
-        if devices.reset_requested() {
+        if devices.reset_requested() || stop.load(Ordering::SeqCst) {
             return Ok(Outcome::Reset);
         }
         match vcpu.run() {

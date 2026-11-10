@@ -621,9 +621,12 @@ pub fn create(
                      use the qemu engine for disk images and ISOs"
                 );
             }
-            if spec.cpus > 1 {
-                log("  bContain's own hypervisor runs 1 vCPU for now".into());
-                spec.cpus = 1;
+            let max_cpus = bvmm::platform::MAX_CPUS as u32;
+            if spec.cpus > max_cpus {
+                log(format!(
+                    "  bContain's own hypervisor runs at most {max_cpus} vCPU(s) here for now"
+                ));
+                spec.cpus = max_cpus;
             }
             if spec.memory_mib > crate::native::MAX_MEMORY_MIB {
                 log(format!(

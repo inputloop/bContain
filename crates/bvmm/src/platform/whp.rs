@@ -537,7 +537,17 @@ fn set_property<T>(api: &Api, p: Partition, code: u32, value: &T, what: &str) ->
     check(hr, what)
 }
 
-pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result<Outcome> {
+pub fn run(
+    mem: &GuestMemory,
+    boot: &BootState,
+    devices: Arc<Devices>,
+    cpus: u8,
+) -> Result<Outcome> {
+    if cpus != 1 {
+        return Err(Error::new(
+            "bvmm runs one virtual processor on Windows Hypervisor Platform for now",
+        ));
+    }
     // Leaked on purpose: the interrupt route outlives this call by a moment
     // when the input thread races shutdown, and the DLLs stay loaded anyway.
     let api: &'static Api = Box::leak(Box::new(Api::load()?));

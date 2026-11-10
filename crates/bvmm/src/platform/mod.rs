@@ -20,19 +20,27 @@ pub mod whp;
 /// the kernel; WHP emulates only the local APIC).
 pub const NEEDS_IOAPIC: bool = cfg!(windows);
 
+/// The most virtual processors this platform's backend can run.
+pub const MAX_CPUS: u8 = if cfg!(windows) { 1 } else { 64 };
+
 /// Run the guest until it resets, halts or fails.
-pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result<Outcome> {
+pub fn run(
+    mem: &GuestMemory,
+    boot: &BootState,
+    devices: Arc<Devices>,
+    cpus: u8,
+) -> Result<Outcome> {
     #[cfg(target_os = "linux")]
     {
-        kvm::run(mem, boot, devices)
+        kvm::run(mem, boot, devices, cpus)
     }
     #[cfg(windows)]
     {
-        whp::run(mem, boot, devices)
+        whp::run(mem, boot, devices, cpus)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
-        let _ = (mem, boot, devices);
+        let _ = (mem, boot, devices, cpus);
         Err(crate::Error::new(
             "bContain's hypervisor runs on Linux (KVM) and Windows (WHP)",
         ))
