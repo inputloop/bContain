@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
+# SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
+name: native-vmm
+# Runs bvmm, bContain's own hypervisor, on real hardware virtualization:
+# GitHub's Linux runners have KVM and its Windows runners have the Windows
+# Hypervisor Platform enabled. Each step keeps going after a failure so one
+# run shows how far the engine gets.
+#
+# Runs on pushes to claude/** branches that touch the engine, and by hand.
+# This repository is public, so standard runners do not use paid minutes.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "crates/bvmm/**"
+      - "crates/bcontain/src/native.rs"
+      - ".github/workflows/native-vmm.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  kvm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Open /dev/kvm to the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - run: cargo build --release -p bcontain
+      - name: Unit tests
+        run: cargo test -p bvmm
+      - name: hypervisor-test (40-byte guest)
+        continue-on-error: true
+        run: ./target/release/bcontain hypervisor-test
+      - name: Fetch guest kernel
+        continue-on-error: true
+        run: ./target/release/bcontain kernel fetch
+      - name: Boot a container on bvmm (E0)
+        continue-on-error: true
+        run: |
+          set +e
+          timeout 120 ./target/release/bcontain run --engine native alpine:3.20 -- uname -a 2>&1 | tee boot.log | tail -n 80
+          echo "EXIT=${PIPESTATUS[0]}"
+          if grep -q "^Linux " boot.log; then echo "E0_KVM=PASS"; else echo "E0_KVM=FAIL"; fi
+
+  whp:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p bcontain
+      - name: Unit tests
+        run: cargo test -p bvmm
+      - name: hypervisor-test (40-byte guest)
+        continue-on-error: true
+        run: .\target\release\bcontain.exe hypervisor-test
+      - name: Fetch guest kernel
+        continue-on-error: true
+        run: .\target\release\bcontain.exe kernel fetch
+      - name: Boot a container on bvmm (E0)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath .\target\release\bcontain.exe -ArgumentList 'run','--engine','native','alpine:3.20','--','uname','-a' -RedirectStandardOutput boot.log -RedirectStandardError boot.err -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(120000)) { $p.Kill(); "TIMEOUT after 120 s" }
+          Get-Content boot.log -Tail 80 -ErrorAction SilentlyContinue
+          Get-Content boot.err -Tail 40 -ErrorAction SilentlyContinue
+          if (Select-String -Path boot.log -Pattern '^Linux ' -Quiet) { "E0_WHP=PASS" } else { "E0_WHP=FAIL" }
+          exit 0
