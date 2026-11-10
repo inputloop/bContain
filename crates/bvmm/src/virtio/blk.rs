@@ -1,16 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
-//! virtio-blk (Virtio 1.2, section 5.2) backed by a raw image file.
+//! virtio-blk (Virtio 1.2, section 5.2) backed by a raw image file, or by
+//! several files laid end to end (see [`crate::disk`]).
 //! Requests are served on the thread that delivered the kick.
 
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::queue::{Chain, Queue};
 use super::{VirtioDevice, TYPE_BLOCK};
+use crate::disk::Disk;
 use crate::memory::GuestMemory;
-use crate::{Error, Result};
+use crate::Result;
 
 const SECTOR: u64 = 512;
 const F_RO: u64 = 1 << 5;
@@ -30,7 +30,7 @@ const S_UNSUPP: u8 = 2;
 const MAX_BUFFER: u32 = 8 << 20;
 
 pub struct Block {
-    file: File,
+    disk: Disk,
     sectors: u64,
     read_only: bool,
     id: [u8; 20],
@@ -38,24 +38,16 @@ pub struct Block {
 
 impl Block {
     pub fn open(path: &Path, read_only: bool) -> Result<Block> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(!read_only)
-            .open(path)
-            .map_err(|e| Error::new(format!("opening disk {}: {e}", path.display())))?;
-        let len = file
-            .metadata()
-            .map_err(|e| Error::new(format!("reading the size of {}: {e}", path.display())))?
-            .len();
+        let disk = Disk::open(path, read_only)?;
         let mut id = [0u8; 20];
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
         for (d, s) in id.iter_mut().zip(name.unwrap_or_default().bytes()) {
             *d = s;
         }
         Ok(Block {
-            file,
-            sectors: len / SECTOR,
-            read_only,
+            sectors: disk.len() / SECTOR,
+            read_only: read_only || disk.read_only(),
+            disk,
             id,
         })
     }
@@ -89,27 +81,26 @@ impl Block {
                     if kind == T_OUT && self.read_only {
                         return Ok(S_IOERR);
                     }
-                    self.file
-                        .seek(SeekFrom::Start(sector * SECTOR))
-                        .map_err(|_| ())?;
+                    let mut at = sector * SECTOR;
                     for d in data {
                         if d.len > MAX_BUFFER || d.writable != (kind == T_IN) {
                             return Ok(S_IOERR);
                         }
                         let mut buf = vec![0u8; d.len as usize];
                         if kind == T_IN {
-                            self.file.read_exact(&mut buf).map_err(|_| ())?;
+                            self.disk.read_at(at, &mut buf).map_err(|_| ())?;
                             mem.write(d.addr, &buf).map_err(|_| ())?;
                             written += d.len;
                         } else {
                             mem.read(d.addr, &mut buf).map_err(|_| ())?;
-                            self.file.write_all(&buf).map_err(|_| ())?;
+                            self.disk.write_at(at, &buf).map_err(|_| ())?;
                         }
+                        at += d.len as u64;
                     }
                     Ok(S_OK)
                 }
                 T_FLUSH => {
-                    self.file.sync_data().map_err(|_| ())?;
+                    self.disk.flush().map_err(|_| ())?;
                     Ok(S_OK)
                 }
                 T_GET_ID => {
