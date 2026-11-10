@@ -6,16 +6,10 @@ name: native-vmm
 # Hypervisor Platform enabled. Each step keeps going after a failure so one
 # run shows how far the engine gets.
 #
-# Runs on pushes to claude/** branches that touch the engine, and by hand.
-# This repository is public, so standard runners do not use paid minutes.
+# Manual only. The regular runs happen from inputloop/gameDroid's
+# engine-bvmm workflow, which builds this repository.
 on:
   workflow_dispatch:
-  push:
-    branches: ["claude/**"]
-    paths:
-      - "crates/bvmm/**"
-      - "crates/bcontain/src/native.rs"
-      - ".github/workflows/native-vmm.yml"
 
 permissions:
   contents: read
