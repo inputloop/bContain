@@ -49,6 +49,7 @@ impl Native {
                 _ => bvmm::platform::ClockSource::Paravirtual,
             },
             display: None,
+            inputs: Vec::new(),
         })
     }
 }

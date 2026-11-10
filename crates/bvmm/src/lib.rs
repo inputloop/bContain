@@ -204,6 +204,8 @@ pub struct VmConfig {
     pub clock: platform::ClockSource,
     /// A screen for the guest. Keep a clone to read frames from.
     pub display: Option<virtio::gpu::Display>,
+    /// Input devices; keep each one's sender to push events.
+    pub inputs: Vec<virtio::input::Input>,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -237,6 +239,9 @@ pub fn run_linux(
     if let Some(display) = &cfg.display {
         bus.add_virtio(Box::new(virtio::gpu::Gpu::new(display.clone())));
     }
+    for input in &cfg.inputs {
+        bus.add_virtio(Box::new(input.clone()));
+    }
     let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
     let clock = platform::clock_kernel_params(cfg.clock);
     let cmdline = format!("{} {} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci, clock);
@@ -246,6 +251,15 @@ pub fn run_linux(
         devices = devices.with_pci(bus);
     }
     let devices = Arc::new(devices);
+    for input in &cfg.inputs {
+        // A weak link: senders may outlive the machine.
+        let machine = Arc::downgrade(&devices);
+        input.set_wake(Box::new(move || {
+            if let Some(d) = machine.upgrade() {
+                d.poll_devices();
+            }
+        }));
+    }
     if let Some(mut input) = input {
         let d = devices.clone();
         std::thread::spawn(move || {

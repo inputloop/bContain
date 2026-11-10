@@ -6,6 +6,7 @@
 
 pub mod blk;
 pub mod gpu;
+pub mod input;
 pub mod queue;
 
 use crate::memory::GuestMemory;
@@ -14,6 +15,7 @@ use queue::Queue;
 /// Device type numbers from the specification (section 5).
 pub const TYPE_BLOCK: u32 = 2;
 pub const TYPE_GPU: u32 = 16;
+pub const TYPE_INPUT: u32 = 18;
 
 /// `VIRTIO_F_VERSION_1`: the device follows the 1.x specification.
 pub const F_VERSION_1: u64 = 1 << 32;
@@ -38,6 +40,12 @@ pub trait VirtioDevice: Send {
     /// The driver kicked queue `index`. Returns true if buffers were
     /// returned to the guest, so it should be interrupted.
     fn notify(&mut self, index: usize, queue: &mut Queue, mem: &GuestMemory) -> bool;
+    /// Work the device does on its own initiative (deliver input events,
+    /// incoming data). Called when the host asked for it and after every
+    /// kick. Returns the indexes of queues that got buffers back.
+    fn poll(&mut self, _queues: &mut [Queue], _mem: &GuestMemory) -> Vec<usize> {
+        Vec::new()
+    }
     /// The driver reset the device.
     fn reset(&mut self) {}
 }

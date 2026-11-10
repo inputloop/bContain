@@ -25,6 +25,8 @@ options for run:
   --display <W>x<H>      give the guest a screen of this size
   --screenshot <file>    with --display: keep the newest frame in this PPM file,
                          rewritten about once a second while the guest draws
+  --touchscreen          with --display: a multi-touch screen of the same size
+  --keyboard             a keyboard
   --stdin                send this process's standard input to the guest console
 
 The guest's serial console is written to standard output.
@@ -51,6 +53,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut initrd: Option<PathBuf> = None;
     let mut stdin = false;
     let mut screenshot: Option<PathBuf> = None;
+    let (mut touchscreen, mut keyboard) = (false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--kernel" => kernel = Some(value(&mut args, &a)?.into()),
@@ -98,6 +101,8 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
                 cfg.display = Some(bvmm::virtio::gpu::Display::new(size.0, size.1));
             }
             "--screenshot" => screenshot = Some(value(&mut args, &a)?.into()),
+            "--touchscreen" => touchscreen = true,
+            "--keyboard" => keyboard = true,
             "--stdin" => stdin = true,
             other => return Err(format!("unknown option `{other}`")),
         }
@@ -110,6 +115,20 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     }
     if screenshot.is_some() && cfg.display.is_none() {
         return Err("--screenshot needs --display".into());
+    }
+    // The senders are dropped: this command has no way to make input yet.
+    // The devices are still worth having, so the guest sees them.
+    if touchscreen {
+        let (w, h) = cfg
+            .display
+            .as_ref()
+            .ok_or("--touchscreen needs --display")?
+            .size();
+        cfg.inputs
+            .push(bvmm::virtio::input::Input::touchscreen(w, h).0);
+    }
+    if keyboard {
+        cfg.inputs.push(bvmm::virtio::input::Input::keyboard().0);
     }
     Ok(Options {
         cfg,
@@ -223,6 +242,8 @@ mod tests {
             "host-tsc",
             "--display",
             "720x1280",
+            "--touchscreen",
+            "--keyboard",
             "--stdin",
         ]))
         .unwrap();
@@ -234,6 +255,7 @@ mod tests {
         assert!(!cfg.disks[0].read_only && cfg.disks[1].read_only);
         assert_eq!(cfg.disks[1].path.to_str(), Some("b.layout"));
         assert_eq!(cfg.display.unwrap().size(), (720, 1280));
+        assert_eq!(cfg.inputs.len(), 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -251,5 +273,9 @@ mod tests {
         assert!(parse(args(&["--clock", "sundial"])).is_err());
         assert!(parse(args(&["--display", "720"])).is_err());
         assert!(parse(args(&["--display", "0x5"])).is_err());
+        assert!(
+            parse(args(&["--touchscreen"])).is_err(),
+            "no kernel, no display"
+        );
     }
 }

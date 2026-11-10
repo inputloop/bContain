@@ -68,6 +68,14 @@ impl Devices {
         let _ = self.msi.set(route);
     }
 
+    /// Deliver whatever the host has queued for the guest on PCI devices
+    /// (input events and the like). Safe to call from any thread.
+    pub fn poll_devices(&self) {
+        if let Some(bus) = &self.pci {
+            bus.lock().unwrap().poll(&|a, d| self.send_msi(a, d));
+        }
+    }
+
     fn send_msi(&self, address: u64, data: u32) {
         if let Some(f) = self.msi.get() {
             f(address, data);

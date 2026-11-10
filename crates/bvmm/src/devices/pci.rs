@@ -118,6 +118,7 @@ impl VirtioPci {
         let class: [u8; 3] = match kind {
             crate::virtio::TYPE_BLOCK => [0x00, 0x80, 0x01], // mass storage, other
             crate::virtio::TYPE_GPU => [0x00, 0x80, 0x03],   // display, other
+            crate::virtio::TYPE_INPUT => [0x00, 0x80, 0x09], // input, other
             _ => [0x00, 0x00, 0xff],
         };
         c[0x09..0x0c].copy_from_slice(&class);
@@ -366,6 +367,18 @@ impl VirtioPci {
         }
     }
 
+    /// Let the device do work of its own and interrupt for what it returned.
+    fn poll(&mut self, mem: &GuestMemory, sink: MsiSink) {
+        if self.status & STATUS_DRIVER_OK == 0 {
+            return;
+        }
+        for index in self.dev.poll(&mut self.queues, mem) {
+            if let Some(vector) = self.queues.get(index).map(|q| q.msix_vector) {
+                self.interrupt(vector, sink);
+            }
+        }
+    }
+
     fn mmio_read(&mut self, bar: usize, offset: u64, size: u8) -> u64 {
         let n = (size as usize).min(8);
         let mut out = [0u8; 8];
@@ -454,6 +467,8 @@ impl VirtioPci {
                     let vector = queue.msix_vector;
                     self.interrupt(vector, sink);
                 }
+                // The kick may have brought buffers the device was waiting for.
+                self.poll(mem, sink);
             }
             _ => {}
         }
@@ -547,6 +562,14 @@ impl PciBus {
         let dev = &mut self.devices[slot - 1];
         let merged = (dev.config_read32(reg) & !mask) | ((value << shift) & mask);
         dev.config_write32(reg, merged, sink);
+    }
+
+    /// Let every device deliver what the host has queued for the guest.
+    pub fn poll(&mut self, sink: MsiSink) {
+        let mem = self.mem.clone();
+        for d in &mut self.devices {
+            d.poll(&mem, sink);
+        }
     }
 
     /// Guest read of device memory. `None` if no BAR is at `addr`.
