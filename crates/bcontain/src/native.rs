@@ -46,12 +46,26 @@ impl Native {
 
 /// The QEMU command line configures eth0 with `ip=`; the native VMM has no
 /// network card yet, and the kernel would wait for one.
+///
+/// `BCONTAIN_KERNEL_ARGS`, when set, is appended, and the quiet flags are
+/// dropped so the kernel's own messages show. It is for bring-up and
+/// diagnosis: trying another kernel, or seeing where a boot stops.
 fn native_cmdline(cmdline: &str) -> String {
-    cmdline
+    let extra = std::env::var("BCONTAIN_KERNEL_ARGS").ok();
+    native_cmdline_with(cmdline, extra.as_deref())
+}
+
+fn native_cmdline_with(cmdline: &str, extra: Option<&str>) -> String {
+    let extra = extra.map(str::trim).filter(|e| !e.is_empty());
+    let mut parts: Vec<&str> = cmdline
         .split_whitespace()
         .filter(|p| !p.starts_with("ip="))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|p| extra.is_none() || !(*p == "quiet" || p.starts_with("loglevel=")))
+        .collect();
+    if let Some(e) = extra {
+        parts.extend(e.split_whitespace());
+    }
+    parts.join(" ")
 }
 
 /// Copies the guest console to stdout and remembers the container's exit code.
@@ -185,10 +199,26 @@ mod tests {
     #[test]
     fn drops_ip_param() {
         assert_eq!(
-            native_cmdline(
-                "console=ttyS0 rdinit=/x ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off quiet"
+            native_cmdline_with(
+                "console=ttyS0 rdinit=/x ip=10.0.2.15::10.0.2.2:255.255.255.0::eth0:off quiet",
+                None
             ),
             "console=ttyS0 rdinit=/x quiet"
+        );
+    }
+
+    #[test]
+    fn extra_kernel_args_replace_the_quiet_flags() {
+        assert_eq!(
+            native_cmdline_with(
+                "console=ttyS0 quiet loglevel=3 ip=x",
+                Some(" ignore_loglevel  tsc_early_khz=2000000 ")
+            ),
+            "console=ttyS0 ignore_loglevel tsc_early_khz=2000000"
+        );
+        assert_eq!(
+            native_cmdline_with("console=ttyS0 quiet loglevel=3", Some("  ")),
+            "console=ttyS0 quiet loglevel=3"
         );
     }
 
