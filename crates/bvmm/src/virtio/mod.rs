@@ -5,17 +5,23 @@
 //! Written from the OASIS Virtio 1.2 specification.
 
 pub mod blk;
+pub mod console;
 pub mod gpu;
 pub mod input;
 pub mod queue;
+pub mod rng;
+pub mod vsock;
 
 use crate::memory::GuestMemory;
 use queue::Queue;
 
 /// Device type numbers from the specification (section 5).
 pub const TYPE_BLOCK: u32 = 2;
+pub const TYPE_CONSOLE: u32 = 3;
+pub const TYPE_RNG: u32 = 4;
 pub const TYPE_GPU: u32 = 16;
 pub const TYPE_INPUT: u32 = 18;
+pub const TYPE_VSOCK: u32 = 19;
 
 /// `VIRTIO_F_VERSION_1`: the device follows the 1.x specification.
 pub const F_VERSION_1: u64 = 1 << 32;

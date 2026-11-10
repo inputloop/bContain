@@ -206,6 +206,13 @@ pub struct VmConfig {
     pub display: Option<virtio::gpu::Display>,
     /// Input devices; keep each one's sender to push events.
     pub inputs: Vec<virtio::input::Input>,
+    /// Console ports with nobody at the other end (`/dev/hvc0` upwards in a
+    /// Linux guest), for guest software that needs the ports to exist.
+    pub sink_consoles: u8,
+    /// Give the guest a vsock address. No host services are offered yet.
+    pub vsock_cid: Option<u64>,
+    /// Give the guest a hardware random number source.
+    pub rng: bool,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -241,6 +248,22 @@ pub fn run_linux(
     }
     for input in &cfg.inputs {
         bus.add_virtio(Box::new(input.clone()));
+    }
+    for _ in 0..cfg.sink_consoles {
+        bus.add_virtio(Box::new(virtio::console::SinkConsole));
+    }
+    if let Some(cid) = cfg.vsock_cid {
+        bus.add_virtio(Box::new(virtio::vsock::Vsock::new(cid)));
+    }
+    if cfg.rng {
+        bus.add_virtio(Box::new(virtio::rng::Rng));
+    }
+    if bus.len() > devices::pci::MAX_DEVICES {
+        return Err(Error::new(format!(
+            "{} PCI devices asked for; the bus holds {}",
+            bus.len(),
+            devices::pci::MAX_DEVICES
+        )));
     }
     let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
     let clock = platform::clock_kernel_params(cfg.clock);

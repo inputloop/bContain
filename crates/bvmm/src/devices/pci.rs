@@ -20,6 +20,8 @@ use crate::virtio::{VirtioDevice, F_VERSION_1, STATUS_DRIVER_OK};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;
+/// Slots 1 to 31 of bus 0; slot 0 is the host bridge.
+pub const MAX_DEVICES: usize = 31;
 
 /// Devices get their memory BARs here, 64 KiB apart, inside the 32-bit hole
 /// above guest RAM. The guest may move them; the current value is honoured.
@@ -500,6 +502,10 @@ impl PciBus {
 
     pub fn is_empty(&self) -> bool {
         self.devices.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.devices.len()
     }
 
     /// The register the address latch points at: (slot, register), if it

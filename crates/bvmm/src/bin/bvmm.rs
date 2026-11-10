@@ -27,6 +27,9 @@ options for run:
                          rewritten about once a second while the guest draws
   --touchscreen          with --display: a multi-touch screen of the same size
   --keyboard             a keyboard
+  --sink-consoles <n>    n console ports with nobody at the other end
+  --vsock <cid>          a vsock address for the guest (no host services yet)
+  --rng                  a hardware random number source
   --stdin                send this process's standard input to the guest console
 
 The guest's serial console is written to standard output.
@@ -103,6 +106,19 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
             "--screenshot" => screenshot = Some(value(&mut args, &a)?.into()),
             "--touchscreen" => touchscreen = true,
             "--keyboard" => keyboard = true,
+            "--sink-consoles" => {
+                cfg.sink_consoles = value(&mut args, &a)?
+                    .parse()
+                    .map_err(|_| "--sink-consoles needs a number".to_string())?
+            }
+            "--vsock" => {
+                cfg.vsock_cid = Some(
+                    value(&mut args, &a)?
+                        .parse()
+                        .map_err(|_| "--vsock needs a number, 3 or above".to_string())?,
+                )
+            }
+            "--rng" => cfg.rng = true,
             "--stdin" => stdin = true,
             other => return Err(format!("unknown option `{other}`")),
         }

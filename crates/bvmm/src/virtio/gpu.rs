@@ -167,8 +167,9 @@ struct Resource {
 pub struct Gpu {
     display: Display,
     resources: HashMap<u32, Resource>,
-    /// Resource shown on scanout 0, if any.
-    scanout: Option<u32>,
+    /// Resource shown on scanout 0, if any, and the part of it that shows:
+    /// (x, y, width, height). A resource may be wider than the screen.
+    scanout: Option<(u32, (u32, u32, u32, u32))>,
     allocated: usize,
 }
 
@@ -287,7 +288,7 @@ impl Gpu {
                 match self.resources.remove(&id) {
                     Some(r) => {
                         self.allocated -= r.pixels.len();
-                        if self.scanout == Some(id) {
+                        if self.scanout.is_some_and(|s| s.0 == id) {
                             self.scanout = None;
                         }
                         (RESP_OK_NODATA, Vec::new())
@@ -310,10 +311,13 @@ impl Gpu {
                 let Some(r) = self.resources.get(&id) else {
                     return (RESP_ERR_INVALID_RESOURCE_ID, Vec::new());
                 };
-                if rect_at(req, body, r.width, r.height).is_none() {
+                let Some(rect) = rect_at(req, body, r.width, r.height) else {
+                    return invalid;
+                };
+                if rect.2 == 0 || rect.3 == 0 {
                     return invalid;
                 }
-                self.scanout = Some(id);
+                self.scanout = Some((id, rect));
                 (RESP_OK_NODATA, Vec::new())
             }
             CMD_RESOURCE_ATTACH_BACKING => {
@@ -384,12 +388,19 @@ impl Gpu {
                 if rect_at(req, body, r.width, r.height).is_none() {
                     return invalid;
                 }
-                if self.scanout == Some(id) {
+                if let Some((_, (x, y, w, h))) = self.scanout.filter(|s| s.0 == id) {
                     let mut frame = self.display.frame.lock().unwrap();
-                    frame.width = r.width;
-                    frame.height = r.height;
+                    frame.width = w;
+                    frame.height = h;
                     frame.format = r.format;
-                    frame.pixels.clone_from(&r.pixels);
+                    frame.pixels.clear();
+                    let stride = r.width as usize * 4;
+                    for row in 0..h as usize {
+                        let at = (y as usize + row) * stride + x as usize * 4;
+                        frame
+                            .pixels
+                            .extend_from_slice(&r.pixels[at..at + w as usize * 4]);
+                    }
                     frame.sequence += 1;
                 }
                 (RESP_OK_NODATA, Vec::new())
@@ -528,6 +539,35 @@ mod tests {
         let px = display.frame().pixels;
         assert_eq!(&px[20..28], &[9, 9, 9, 9, 8, 8, 8, 8]);
         assert!(px[..20].iter().all(|b| *b == 0) && px[28..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn only_the_scanout_rectangle_of_a_wider_resource_is_shown() {
+        let mem = GuestMemory::new(64 << 20).unwrap();
+        let display = Display::new(2, 2);
+        let mut gpu = Gpu::new(display.clone());
+        // A 4x2 buffer of which the left 2x2 is the screen, as when a guest
+        // rounds its buffer width up.
+        gpu.control(&request(CMD_RESOURCE_CREATE_2D, &[1, 67, 4, 2]), &mem);
+        gpu.control(
+            &request(CMD_RESOURCE_ATTACH_BACKING, &[1, 1, 0x10000, 0, 32, 0]),
+            &mem,
+        );
+        gpu.control(&request(CMD_SET_SCANOUT, &[0, 0, 2, 2, 0, 1]), &mem);
+        let pixels: Vec<u8> = (0..8u8).flat_map(|n| [n, n, n, 0xff]).collect();
+        mem.write(0x10000, &pixels).unwrap();
+        gpu.control(
+            &request(CMD_TRANSFER_TO_HOST_2D, &[0, 0, 4, 2, 0, 0, 1, 0]),
+            &mem,
+        );
+        gpu.control(&request(CMD_RESOURCE_FLUSH, &[0, 0, 4, 2, 1, 0]), &mem);
+        let frame = display.frame();
+        assert_eq!((frame.width, frame.height), (2, 2));
+        let shown: Vec<u8> = frame.pixels.chunks(4).map(|p| p[0]).collect();
+        assert_eq!(shown, [0, 1, 4, 5], "columns 2 and 3 are off screen");
+        // An empty scanout rectangle is refused.
+        let (kind, _) = gpu.control(&request(CMD_SET_SCANOUT, &[0, 0, 0, 2, 0, 1]), &mem);
+        assert_eq!(kind, RESP_ERR_INVALID_PARAMETER);
     }
 
     #[test]
