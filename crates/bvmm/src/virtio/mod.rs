@@ -5,6 +5,7 @@
 //! Written from the OASIS Virtio 1.2 specification.
 
 pub mod blk;
+pub mod gpu;
 pub mod queue;
 
 use crate::memory::GuestMemory;
@@ -12,6 +13,7 @@ use queue::Queue;
 
 /// Device type numbers from the specification (section 5).
 pub const TYPE_BLOCK: u32 = 2;
+pub const TYPE_GPU: u32 = 16;
 
 /// `VIRTIO_F_VERSION_1`: the device follows the 1.x specification.
 pub const F_VERSION_1: u64 = 1 << 32;

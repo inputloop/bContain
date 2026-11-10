@@ -50,31 +50,38 @@ pub fn run(
 /// How the guest kernel should find its clock on this platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClockSource {
-    /// The platform default: see [`clock_kernel_params`].
-    #[default]
-    Auto,
     /// Leave it to the hypervisor's paravirtual interface (Hyper-V
     /// enlightenments on WHP, kvm-clock on KVM), whatever the kernel supports.
+    #[default]
     Paravirtual,
+    /// On WHP: tell the kernel to ignore the hypervisor and give it the
+    /// measured TSC frequency. Experimental and currently broken: see
+    /// [`clock_kernel_params`].
+    HostTsc,
 }
 
-/// Kernel parameters that give the guest a precise clock.
+/// Kernel parameters for the chosen clock.
 ///
 /// On KVM nothing is needed: kernels find kvm-clock or calibrate the TSC
 /// against KVM's PIT.
 ///
 /// On WHP the guest is told it runs on Hyper-V. A kernel built with Hyper-V
-/// support then uses Hyper-V's clock. A kernel without it (Android's is one)
-/// still recognises Hyper-V, marks the TSC unstable because of that, has no
-/// Hyper-V clock driver to fall back on, and ends up counting timer ticks.
-/// So by default the kernel is told to ignore the hypervisor (`nopv`) and is
-/// given the TSC frequency directly, which works for both kinds of kernel:
-/// it then calibrates the local APIC timer against the TSC and uses the TSC
-/// as its clock.
+/// support then uses Hyper-V's clock and all is well. A kernel without it
+/// (Android's is one) still recognises Hyper-V, takes the timer frequencies
+/// from it, but marks the TSC unstable because of Hyper-V and, having no
+/// Hyper-V clock driver, ends up counting timer ticks: it runs, with a
+/// coarse clock.
+///
+/// [`ClockSource::HostTsc`] was an attempt to fix that with
+/// `nopv tsc_early_khz=N`. Tried on WHP on 2026-11-10 it made things worse:
+/// the kernel then has the TSC but no reference to calibrate the local APIC
+/// timer against ("APIC timer disabled due to verification failure"), so it
+/// has no tick at all and hangs as soon as it needs one. It needs an emulated
+/// PIT to become usable, and stays opt-in until then.
 pub fn clock_kernel_params(clock: ClockSource) -> String {
     #[cfg(windows)]
     {
-        if clock == ClockSource::Auto {
+        if clock == ClockSource::HostTsc {
             if let Some(khz) = measure_tsc_khz() {
                 return format!("nopv tsc_early_khz={khz}");
             }
@@ -134,7 +141,8 @@ mod tests {
     #[test]
     fn paravirtual_clock_adds_no_parameters() {
         assert_eq!(clock_kernel_params(ClockSource::Paravirtual), "");
+        assert_eq!(clock_kernel_params(ClockSource::default()), "");
         #[cfg(not(windows))]
-        assert_eq!(clock_kernel_params(ClockSource::Auto), "");
+        assert_eq!(clock_kernel_params(ClockSource::HostTsc), "");
     }
 }

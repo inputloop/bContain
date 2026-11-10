@@ -117,6 +117,7 @@ impl VirtioPci {
         c[0x08] = 1; // revision: modern-only
         let class: [u8; 3] = match kind {
             crate::virtio::TYPE_BLOCK => [0x00, 0x80, 0x01], // mass storage, other
+            crate::virtio::TYPE_GPU => [0x00, 0x80, 0x03],   // display, other
             _ => [0x00, 0x00, 0xff],
         };
         c[0x09..0x0c].copy_from_slice(&class);

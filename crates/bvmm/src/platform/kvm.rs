@@ -105,8 +105,10 @@ pub fn run(
             match e.function {
                 // Initial APIC ID, and how many logical processors there are.
                 1 => e.ebx = (e.ebx & 0x0000_ffff) | (cpus as u32) << 16 | (id as u32) << 24,
-                // x2APIC ID.
-                0xb | 0x1f => e.edx = id as u32,
+                // x2APIC ID, in the Intel and AMD topology leaves.
+                0xb | 0x1f | 0x8000_0026 => e.edx = id as u32,
+                // AMD: extended APIC ID.
+                0x8000_001e => e.eax = id as u32,
                 _ => {}
             }
         }

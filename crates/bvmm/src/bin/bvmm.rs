@@ -21,7 +21,10 @@ options for run:
   --disk <path>[,ro]     raw image or disk layout; repeat for more (first is vda)
   --cpus <n>             virtual processors (default 1)
   --memory <MiB>         guest memory (default 1024)
-  --clock paravirtual    leave the clock to the hypervisor's own interface
+  --clock host-tsc       experimental, WHP: give the guest the measured TSC frequency
+  --display <W>x<H>      give the guest a screen of this size
+  --screenshot <file>    with --display: keep the newest frame in this PPM file,
+                         rewritten about once a second while the guest draws
   --stdin                send this process's standard input to the guest console
 
 The guest's serial console is written to standard output.
@@ -32,7 +35,13 @@ fn value(args: &mut impl Iterator<Item = String>, flag: &str) -> Result<String, 
     args.next().ok_or_else(|| format!("{flag} needs a value"))
 }
 
-fn parse(mut args: impl Iterator<Item = String>) -> Result<(VmConfig, bool), String> {
+struct Options {
+    cfg: VmConfig,
+    stdin: bool,
+    screenshot: Option<PathBuf>,
+}
+
+fn parse(mut args: impl Iterator<Item = String>) -> Result<Options, String> {
     let mut cfg = VmConfig {
         memory_mib: 1024,
         cpus: 1,
@@ -41,6 +50,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(VmConfig, bool), Str
     let mut kernel: Option<PathBuf> = None;
     let mut initrd: Option<PathBuf> = None;
     let mut stdin = false;
+    let mut screenshot: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--kernel" => kernel = Some(value(&mut args, &a)?.into()),
@@ -75,9 +85,19 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(VmConfig, bool), Str
             }
             "--clock" => match value(&mut args, &a)?.as_str() {
                 "paravirtual" => cfg.clock = ClockSource::Paravirtual,
-                "auto" => cfg.clock = ClockSource::Auto,
+                "host-tsc" => cfg.clock = ClockSource::HostTsc,
                 other => return Err(format!("unknown clock `{other}`")),
             },
+            "--display" => {
+                let v = value(&mut args, &a)?;
+                let size = v
+                    .split_once('x')
+                    .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+                    .filter(|(w, h)| *w > 0 && *h > 0)
+                    .ok_or("--display needs a size such as 720x1280")?;
+                cfg.display = Some(bvmm::virtio::gpu::Display::new(size.0, size.1));
+            }
+            "--screenshot" => screenshot = Some(value(&mut args, &a)?.into()),
             "--stdin" => stdin = true,
             other => return Err(format!("unknown option `{other}`")),
         }
@@ -88,7 +108,34 @@ fn parse(mut args: impl Iterator<Item = String>) -> Result<(VmConfig, bool), Str
     if let Some(p) = initrd {
         cfg.initrd = Some(std::fs::read(&p).map_err(|e| format!("reading {}: {e}", p.display()))?);
     }
-    Ok((cfg, stdin))
+    if screenshot.is_some() && cfg.display.is_none() {
+        return Err("--screenshot needs --display".into());
+    }
+    Ok(Options {
+        cfg,
+        stdin,
+        screenshot,
+    })
+}
+
+/// Keep `path` holding the newest frame while the guest runs.
+fn save_frames(display: bvmm::virtio::gpu::Display, path: PathBuf) {
+    std::thread::spawn(move || {
+        let mut saved = 0;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            if display.sequence() == saved {
+                continue;
+            }
+            let frame = display.frame();
+            saved = frame.sequence;
+            // Write beside the target and rename, so a reader never sees half a file.
+            let tmp = path.with_extension("tmp");
+            if std::fs::write(&tmp, frame.to_ppm()).is_ok() {
+                let _ = std::fs::rename(&tmp, &path);
+            }
+        }
+    });
 }
 
 fn main() -> ExitCode {
@@ -105,13 +152,20 @@ fn main() -> ExitCode {
             }
         },
         Some("run") => {
-            let (cfg, stdin) = match parse(args) {
+            let Options {
+                cfg,
+                stdin,
+                screenshot,
+            } = match parse(args) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("bvmm: {e}\n\n{USAGE}");
                     return ExitCode::FAILURE;
                 }
             };
+            if let (Some(display), Some(path)) = (&cfg.display, screenshot) {
+                save_frames(display.clone(), path);
+            }
             let input: Option<Box<dyn std::io::Read + Send>> =
                 stdin.then(|| Box::new(std::io::stdin()) as _);
             match bvmm::run_linux(&cfg, Box::new(std::io::stdout()), input) {
@@ -152,7 +206,7 @@ mod tests {
         let c = dir.join("c");
         std::fs::write(&k, b"kernel").unwrap();
         std::fs::write(&c, "console=ttyS0\n  init=/init\n").unwrap();
-        let (cfg, stdin) = parse(args(&[
+        let Options { cfg, stdin, .. } = parse(args(&[
             "--kernel",
             k.to_str().unwrap(),
             "--cmdline-file",
@@ -166,17 +220,20 @@ mod tests {
             "--memory",
             "4096",
             "--clock",
-            "paravirtual",
+            "host-tsc",
+            "--display",
+            "720x1280",
             "--stdin",
         ]))
         .unwrap();
         assert_eq!(cfg.kernel, b"kernel");
         assert_eq!(cfg.cmdline, "console=ttyS0 init=/init");
         assert_eq!((cfg.cpus, cfg.memory_mib, stdin), (4, 4096, true));
-        assert_eq!(cfg.clock, ClockSource::Paravirtual);
+        assert_eq!(cfg.clock, ClockSource::HostTsc);
         assert_eq!(cfg.disks.len(), 2);
         assert!(!cfg.disks[0].read_only && cfg.disks[1].read_only);
         assert_eq!(cfg.disks[1].path.to_str(), Some("b.layout"));
+        assert_eq!(cfg.display.unwrap().size(), (720, 1280));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -192,5 +249,7 @@ mod tests {
             .unwrap()
             .contains("unknown option"));
         assert!(parse(args(&["--clock", "sundial"])).is_err());
+        assert!(parse(args(&["--display", "720"])).is_err());
+        assert!(parse(args(&["--display", "0x5"])).is_err());
     }
 }

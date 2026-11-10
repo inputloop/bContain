@@ -42,12 +42,13 @@ impl Native {
             cmdline: native_cmdline(&k.cmdline),
             disks: native_disks(std::env::var("BCONTAIN_NATIVE_DISKS").ok().as_deref()),
             cpus: spec.cpus.clamp(1, bvmm::platform::MAX_CPUS as u32) as u8,
-            // BCONTAIN_NATIVE_CLOCK=paravirtual leaves the clock to the
-            // hypervisor's own interface; for comparison during bring-up.
+            // BCONTAIN_NATIVE_CLOCK=host-tsc tries the experimental clock
+            // path on Windows; see bvmm::platform::clock_kernel_params.
             clock: match std::env::var("BCONTAIN_NATIVE_CLOCK").as_deref() {
-                Ok("paravirtual") => bvmm::platform::ClockSource::Paravirtual,
-                _ => bvmm::platform::ClockSource::Auto,
+                Ok("host-tsc") => bvmm::platform::ClockSource::HostTsc,
+                _ => bvmm::platform::ClockSource::Paravirtual,
             },
+            display: None,
         })
     }
 }

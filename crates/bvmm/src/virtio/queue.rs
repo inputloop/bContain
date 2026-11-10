@@ -31,6 +31,38 @@ pub struct Chain {
     pub descs: Vec<Desc>,
 }
 
+impl Chain {
+    /// The driver's bytes: the readable buffers joined, up to `max` bytes.
+    pub fn read_request(&self, mem: &GuestMemory, max: usize) -> Result<Vec<u8>> {
+        let mut out = Vec::new();
+        for d in self.descs.iter().filter(|d| !d.writable) {
+            let take = (d.len as usize).min(max - out.len());
+            let at = out.len();
+            out.resize(at + take, 0);
+            mem.read(d.addr, &mut out[at..])?;
+            if out.len() == max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Write the device's reply across the writable buffers. Returns how
+    /// many bytes fitted.
+    pub fn write_response(&self, mem: &GuestMemory, data: &[u8]) -> Result<u32> {
+        let mut done = 0;
+        for d in self.descs.iter().filter(|d| d.writable) {
+            if done == data.len() {
+                break;
+            }
+            let take = (d.len as usize).min(data.len() - done);
+            mem.write(d.addr, &data[done..done + take])?;
+            done += take;
+        }
+        Ok(done as u32)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Queue {
     pub max_size: u16,
@@ -193,6 +225,33 @@ pub(crate) mod tests {
         assert_eq!(mem.read_u16(USED + 2).unwrap(), 1);
         assert_eq!(mem.read_u32(USED + 4).unwrap(), 3);
         assert_eq!(mem.read_u32(USED + 8).unwrap(), 513);
+    }
+
+    #[test]
+    fn requests_and_responses_span_buffers() {
+        let mem = GuestMemory::new(64 << 20).unwrap();
+        let mut q = queue(8);
+        mem.write(0x8000, b"hello ").unwrap();
+        mem.write(0x9000, b"world!").unwrap();
+        put_desc(&mem, 0, 0x8000, 6, DESC_F_NEXT, 1);
+        put_desc(&mem, 1, 0x9000, 6, DESC_F_NEXT, 2);
+        put_desc(&mem, 2, 0xa000, 4, DESC_F_NEXT | DESC_F_WRITE, 3);
+        put_desc(&mem, 3, 0xb000, 4, DESC_F_WRITE, 0);
+        publish(&mem, 8, 0, 0);
+        let c = q.pop(&mem).unwrap().unwrap();
+        assert_eq!(c.read_request(&mem, 64).unwrap(), b"hello world!");
+        assert_eq!(c.read_request(&mem, 8).unwrap(), b"hello wo", "capped");
+        assert_eq!(c.write_response(&mem, b"abcdef").unwrap(), 6);
+        let mut got = [0u8; 4];
+        mem.read(0xa000, &mut got).unwrap();
+        assert_eq!(&got, b"abcd");
+        mem.read(0xb000, &mut got).unwrap();
+        assert_eq!(&got[..2], b"ef");
+        assert_eq!(
+            c.write_response(&mem, &[0; 100]).unwrap(),
+            8,
+            "no more room"
+        );
     }
 
     #[test]

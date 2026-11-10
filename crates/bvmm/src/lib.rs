@@ -202,6 +202,8 @@ pub struct VmConfig {
     pub cpus: u8,
     /// How the guest finds its clock.
     pub clock: platform::ClockSource,
+    /// A screen for the guest. Keep a clone to read frames from.
+    pub display: Option<virtio::gpu::Display>,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -231,6 +233,9 @@ pub fn run_linux(
     for disk in &cfg.disks {
         let blk = virtio::blk::Block::open(&disk.path, disk.read_only)?;
         bus.add_virtio(Box::new(blk));
+    }
+    if let Some(display) = &cfg.display {
+        bus.add_virtio(Box::new(virtio::gpu::Gpu::new(display.clone())));
     }
     let pci = if bus.is_empty() { NO_PCI } else { WITH_PCI };
     let clock = platform::clock_kernel_params(cfg.clock);
