@@ -227,13 +227,18 @@ pub fn parse_bzimage(image: &[u8]) -> Result<KernelHeader> {
 pub const E820_RAM: u32 = 1;
 pub const E820_RESERVED: u32 = 2;
 
-/// The memory map the guest sees.
-pub fn e820_map(mem_size: u64) -> Vec<(u64, u64, u32)> {
-    vec![
+/// The memory map the guest sees, for `low` bytes of RAM below the device
+/// hole and `high` bytes from 4 GiB.
+pub fn e820_map(low: u64, high: u64) -> Vec<(u64, u64, u32)> {
+    let mut map = vec![
         (0, EBDA_START, E820_RAM),
         (EBDA_START, 0x10_0000 - EBDA_START, E820_RESERVED),
-        (HIGH_RAM_START, mem_size - HIGH_RAM_START, E820_RAM),
-    ]
+        (HIGH_RAM_START, low - HIGH_RAM_START, E820_RAM),
+    ];
+    if high > 0 {
+        map.push((HIGH_MEMORY_START, high, E820_RAM));
+    }
+    map
 }
 
 /// Load `image` (+ `initrd`) and return the boot vCPU state.
@@ -246,7 +251,7 @@ pub fn load_linux(
     let hdr = parse_bzimage(image)?;
     let kernel = &image[(hdr.setup_sects + 1) * 512..];
     let need = KERNEL_LOAD_ADDR + hdr.init_size.max(kernel.len() as u32) as u64 + (16 << 20);
-    if need > mem.size() {
+    if need > mem.low_size() {
         return Err(Error::new(format!(
             "guest needs at least {} MiB for this kernel",
             need >> 20
@@ -277,7 +282,7 @@ pub fn load_linux(
 
     // Initrd: as high as allowed, page aligned, above the kernel's working area.
     if let Some(rd) = initrd {
-        let ceiling = (hdr.initrd_addr_max as u64 + 1).min(mem.size());
+        let ceiling = (hdr.initrd_addr_max as u64 + 1).min(mem.low_size());
         let addr = ceiling
             .checked_sub(rd.len() as u64)
             .map(|a| a & !0xfff)
@@ -296,7 +301,7 @@ pub fn load_linux(
     }
 
     // e820 table at 0x2d0, count at 0x1e8.
-    let map = e820_map(mem.size());
+    let map = e820_map(mem.low_size(), mem.high_size());
     bp[0x1e8] = map.len() as u8;
     for (i, (addr, size, kind)) in map.iter().enumerate() {
         let o = 0x2d0 + i * 20;

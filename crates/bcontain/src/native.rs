@@ -13,8 +13,8 @@ use anyhow::{bail, Context, Result};
 
 use crate::engine::{Hypervisor, Running, VmSpec};
 
-/// The native VMM is single-vCPU and keeps RAM below the 3 GiB MMIO hole for now.
-pub const MAX_MEMORY_MIB: u64 = 3072;
+/// The most guest memory the native VMM accepts. It is still single-vCPU.
+pub const MAX_MEMORY_MIB: u64 = bvmm::memory::MAX_SIZE >> 20;
 
 /// The line the container init prints when its command ends.
 const EXIT_MARKER: &str = "[bcontain] container exited with code ";

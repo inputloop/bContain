@@ -26,5 +26,7 @@ pub const HIGH_RAM_START: u64 = 0x10_0000;
 pub const KERNEL_LOAD_ADDR: u64 = HIGH_RAM_START;
 /// Guest RAM ends below this; the 32-bit MMIO hole starts here.
 pub const MMIO_HOLE_START: u64 = 0xc000_0000;
+/// RAM that does not fit below the hole continues here.
+pub const HIGH_MEMORY_START: u64 = 0x1_0000_0000;
 pub const IOAPIC_ADDR: u64 = 0xfec0_0000;
 pub const LAPIC_ADDR: u64 = 0xfee0_0000;

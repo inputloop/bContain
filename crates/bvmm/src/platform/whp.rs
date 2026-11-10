@@ -458,10 +458,7 @@ unsafe extern "system" fn memory_callback(
     let c = &*(ctx as *const CallbackContext);
     let a = &mut *access;
     let n = (a.access_size as usize).min(8);
-    let in_ram = a
-        .gpa
-        .checked_add(n as u64)
-        .is_some_and(|end| end <= c.mem.size());
+    let in_ram = c.mem.contains(a.gpa, n);
     if a.direction == 0 {
         if in_ram {
             if c.mem.read(a.gpa, &mut a.data[..n]).is_err() {
@@ -597,19 +594,21 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         unsafe { (api.setup_partition)(partition) },
         "setting up the partition",
     )?;
-    // SAFETY: `mem` is a live allocation of `mem.size()` bytes that outlives the partition.
-    check(
-        unsafe {
-            (api.map_gpa_range)(
-                partition,
-                mem.host_ptr() as *mut c_void,
-                0,
-                mem.size(),
-                MAP_READ_WRITE_EXECUTE,
-            )
-        },
-        "mapping guest memory",
-    )?;
+    for (gpa, host, len) in mem.regions() {
+        // SAFETY: the range is part of `mem`'s live allocation, which outlives the partition.
+        check(
+            unsafe {
+                (api.map_gpa_range)(
+                    partition,
+                    host as *mut c_void,
+                    gpa,
+                    len,
+                    MAP_READ_WRITE_EXECUTE,
+                )
+            },
+            "mapping guest memory",
+        )?;
+    }
     // SAFETY: valid partition handle.
     check(
         unsafe { (api.create_virtual_processor)(partition, 0, 0) },

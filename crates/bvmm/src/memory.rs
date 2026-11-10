@@ -1,11 +1,16 @@
 // SPDX-FileCopyrightText: 2026 Bryant Frankford <nathanielfrankford@gmail.com> and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later OR LGPL-3.0-or-later
-//! Guest RAM: one host allocation mapped at guest-physical address 0.
+//! Guest RAM: one host allocation. The guest sees its first part at
+//! guest-physical address 0, up to the 32-bit device hole, and the rest from
+//! 4 GiB upwards, as on a PC.
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 
-use crate::layout::MMIO_HOLE_START;
+use crate::layout::{HIGH_MEMORY_START, MMIO_HOLE_START};
 use crate::{Error, Result};
+
+/// A generous ceiling; nothing here needs more, and it bounds a bad argument.
+pub const MAX_SIZE: u64 = 256 << 30;
 
 pub struct GuestMemory {
     ptr: *mut u8,
@@ -18,16 +23,15 @@ unsafe impl Send for GuestMemory {}
 unsafe impl Sync for GuestMemory {}
 
 impl GuestMemory {
-    /// Allocate `size` bytes of zeroed guest RAM. RAM must end below the
-    /// 32-bit MMIO hole, which keeps the address map a single region.
+    /// Allocate `size` bytes of zeroed guest RAM, a whole number of pages.
     pub fn new(size: u64) -> Result<GuestMemory> {
         if size < 64 << 20 {
             return Err(Error::new("guest memory must be at least 64 MiB"));
         }
-        if size > MMIO_HOLE_START {
+        if size > MAX_SIZE || size % 4096 != 0 {
             return Err(Error::new(format!(
-                "the native hypervisor supports up to {} MiB of guest memory for now",
-                MMIO_HOLE_START >> 20
+                "guest memory must be a whole number of pages, at most {} GiB",
+                MAX_SIZE >> 30
             )));
         }
         let layout = Layout::from_size_align(size as usize, 4096)
@@ -43,21 +47,48 @@ impl GuestMemory {
         Ok(GuestMemory { ptr, layout })
     }
 
+    /// All guest RAM, in bytes.
     pub fn size(&self) -> u64 {
         self.layout.size() as u64
     }
 
-    pub fn host_ptr(&self) -> *mut u8 {
-        self.ptr
+    /// RAM below the 32-bit device hole, which starts at address 0.
+    pub fn low_size(&self) -> u64 {
+        self.size().min(MMIO_HOLE_START)
     }
 
+    /// RAM placed from 4 GiB upwards.
+    pub fn high_size(&self) -> u64 {
+        self.size() - self.low_size()
+    }
+
+    /// The pieces to map into the guest: (guest address, host pointer, bytes).
+    pub fn regions(&self) -> Vec<(u64, *mut u8, u64)> {
+        let mut r = vec![(0, self.ptr, self.low_size())];
+        if self.high_size() > 0 {
+            // SAFETY: low_size() is within the allocation.
+            let high = unsafe { self.ptr.add(self.low_size() as usize) };
+            r.push((HIGH_MEMORY_START, high, self.high_size()));
+        }
+        r
+    }
+
+    /// Is `gpa..gpa+len` entirely guest RAM?
+    pub fn contains(&self, gpa: u64, len: usize) -> bool {
+        self.check(gpa, len).is_ok()
+    }
+
+    /// Offset into the allocation of a guest range that lies wholly within
+    /// one of the two RAM pieces.
     fn check(&self, gpa: u64, len: usize) -> Result<usize> {
-        let end = gpa.checked_add(len as u64).filter(|&e| e <= self.size());
-        match end {
-            Some(_) => Ok(gpa as usize),
-            None => Err(Error::new(format!(
-                "guest access {gpa:#x}+{len:#x} is outside RAM"
-            ))),
+        let outside = || Error::new(format!("guest access {gpa:#x}+{len:#x} is outside RAM"));
+        let end = gpa.checked_add(len as u64).ok_or_else(outside)?;
+        if end <= self.low_size() {
+            Ok(gpa as usize)
+        } else if gpa >= HIGH_MEMORY_START && end - HIGH_MEMORY_START <= self.high_size() {
+            Ok((self.low_size() + (gpa - HIGH_MEMORY_START)) as usize)
+        } else {
+            Err(outside())
         }
     }
 
@@ -124,6 +155,39 @@ mod tests {
         assert_eq!(m.read_u64(0x1000).unwrap(), 0xdead_beef);
         assert!(m.write(m.size() - 4, &[0; 8]).is_err());
         assert!(m.write(u64::MAX - 2, &[0; 8]).is_err());
-        assert!(GuestMemory::new(4 << 30).is_err());
+        assert!(
+            GuestMemory::new((64 << 20) + 1).is_err(),
+            "whole pages only"
+        );
+        assert!(GuestMemory::new(MAX_SIZE + 4096).is_err());
+    }
+
+    #[test]
+    fn memory_above_the_device_hole_starts_at_4_gib() {
+        // 3 GiB + 64 MiB: the last 64 MiB live at 4 GiB.
+        let m = GuestMemory::new(MMIO_HOLE_START + (64 << 20)).unwrap();
+        assert_eq!(m.low_size(), MMIO_HOLE_START);
+        assert_eq!(m.high_size(), 64 << 20);
+        let r = m.regions();
+        assert_eq!(r.len(), 2);
+        assert_eq!((r[0].0, r[0].2), (0, MMIO_HOLE_START));
+        assert_eq!((r[1].0, r[1].2), (HIGH_MEMORY_START, 64 << 20));
+        // The hole itself is not RAM.
+        assert!(!m.contains(MMIO_HOLE_START, 1));
+        assert!(
+            !m.contains(MMIO_HOLE_START - 4, 8),
+            "no access may straddle the hole"
+        );
+        assert!(m.contains(MMIO_HOLE_START - 8, 8));
+        // Low and high memory are different bytes.
+        m.write_u64(MMIO_HOLE_START - 8, 1).unwrap();
+        m.write_u64(HIGH_MEMORY_START, 2).unwrap();
+        assert_eq!(m.read_u64(MMIO_HOLE_START - 8).unwrap(), 1);
+        assert_eq!(m.read_u64(HIGH_MEMORY_START).unwrap(), 2);
+        let last = HIGH_MEMORY_START + (64 << 20) - 8;
+        m.write_u64(last, 3).unwrap();
+        assert_eq!(m.read_u64(last).unwrap(), 3);
+        assert!(m.write_u64(last + 8, 4).is_err());
+        assert!(GuestMemory::new(64 << 20).unwrap().regions().len() == 1);
     }
 }

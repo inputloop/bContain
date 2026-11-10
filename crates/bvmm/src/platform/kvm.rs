@@ -56,16 +56,18 @@ pub fn run(mem: &GuestMemory, boot: &BootState, devices: Arc<Devices>) -> Result
         ..Default::default()
     };
     vm.create_pit2(pit).map_err(err("creating the PIT"))?;
-    let region = kvm_userspace_memory_region {
-        slot: 0,
-        flags: 0,
-        guest_phys_addr: 0,
-        memory_size: mem.size(),
-        userspace_addr: mem.host_ptr() as u64,
-    };
-    // SAFETY: the region is `mem`'s live allocation, which outlives the VM
-    // (the VM is dropped at the end of this function).
-    unsafe { vm.set_user_memory_region(region) }.map_err(err("mapping guest memory"))?;
+    for (slot, (gpa, host, len)) in mem.regions().into_iter().enumerate() {
+        let region = kvm_userspace_memory_region {
+            slot: slot as u32,
+            flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: len,
+            userspace_addr: host as u64,
+        };
+        // SAFETY: the region is part of `mem`'s live allocation, which
+        // outlives the VM (the VM is dropped at the end of this function).
+        unsafe { vm.set_user_memory_region(region) }.map_err(err("mapping guest memory"))?;
+    }
 
     let line_vm = vm.clone();
     devices.set_irq_route(IrqRoute::KernelLine(Box::new(move |irq| {
