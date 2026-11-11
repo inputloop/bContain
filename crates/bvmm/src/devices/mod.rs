@@ -39,6 +39,9 @@ pub struct Devices {
     /// How an MSI message (address, data) reaches a local APIC.
     msi: OnceLock<Box<dyn Fn(u64, u32) + Send + Sync>>,
     reset: AtomicBool,
+    /// How host memory is mapped into the guest; set by the hypervisor
+    /// backend when it starts.
+    mapper: crate::memory::MapperSlot,
 }
 
 impl Devices {
@@ -51,6 +54,7 @@ impl Devices {
             pci: None,
             msi: OnceLock::new(),
             reset: AtomicBool::new(false),
+            mapper: Default::default(),
         }
     }
 
@@ -58,6 +62,18 @@ impl Devices {
     pub fn with_pci(mut self, bus: PciBus) -> Devices {
         self.pci = Some(Mutex::new(bus));
         self
+    }
+
+    /// Use `slot` for the machine's memory mapper, so that devices made
+    /// before the machine could be given a clone of it.
+    pub fn with_mapper_slot(mut self, slot: crate::memory::MapperSlot) -> Devices {
+        self.mapper = slot;
+        self
+    }
+
+    /// Called by the hypervisor backend once it can map memory.
+    pub fn set_mapper(&self, mapper: Box<dyn crate::memory::Mapper>) {
+        let _ = self.mapper.set(mapper);
     }
 
     pub fn has_pci(&self) -> bool {

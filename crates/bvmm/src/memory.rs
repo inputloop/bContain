@@ -144,6 +144,24 @@ impl Drop for GuestMemory {
     }
 }
 
+/// Maps host memory into the running guest's address space, and takes it
+/// out again. Each hypervisor backend supplies one; devices that share host
+/// memory with the guest (the GPU's host-visible region) use it.
+pub trait Mapper: Send + Sync {
+    /// Make `len` bytes at `host` appear at guest address `gpa`. All three
+    /// must be multiples of the page size.
+    ///
+    /// # Safety
+    /// The host range must stay valid until it is unmapped.
+    unsafe fn map(&self, gpa: u64, host: *mut u8, len: u64) -> crate::Result<()>;
+    /// Remove a mapping made at `gpa` with `map`.
+    fn unmap(&self, gpa: u64, len: u64) -> crate::Result<()>;
+}
+
+/// Where a device finds the machine's [`Mapper`]: empty until the
+/// hypervisor backend has started.
+pub type MapperSlot = std::sync::Arc<std::sync::OnceLock<Box<dyn Mapper>>>;
+
 #[cfg(test)]
 mod tests {
     use super::*;

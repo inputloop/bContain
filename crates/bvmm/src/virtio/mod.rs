@@ -56,4 +56,11 @@ pub trait VirtioDevice: Send {
     }
     /// The driver reset the device.
     fn reset(&mut self) {}
+    /// A window of guest address space the device fills with host memory
+    /// (Virtio 1.2, section 2.10 "shared memory regions"): its id and size.
+    fn shm_region(&self) -> Option<(u8, u64)> {
+        None
+    }
+    /// Told once where that window is in guest address space.
+    fn set_shm_base(&mut self, _gpa: u64) {}
 }

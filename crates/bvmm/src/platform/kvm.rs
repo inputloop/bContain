@@ -76,6 +76,11 @@ pub fn run(
         unsafe { vm.set_user_memory_region(region) }.map_err(err("mapping guest memory"))?;
     }
 
+    devices.set_mapper(Box::new(KvmMapper {
+        vm: vm.clone(),
+        slots: Default::default(),
+    }));
+
     let line_vm = vm.clone();
     devices.set_irq_route(IrqRoute::KernelLine(Box::new(move |irq| {
         // ISA interrupts are edges: raise and lower the line.
@@ -157,6 +162,84 @@ pub fn run(
         }
         outcome
     })
+}
+
+/// Guest RAM takes the first memory slots; mappings made while the guest
+/// runs take slots from here up.
+const FIRST_DYNAMIC_SLOT: u32 = 8;
+/// KVM offers at least this many slots on x86 (KVM_CAP_NR_MEMSLOTS reports
+/// 32764 on current kernels); a mapping beyond it is refused.
+const LAST_DYNAMIC_SLOT: u32 = 32000;
+
+/// Maps host memory into the guest with KVM memory slots.
+struct KvmMapper {
+    vm: Arc<kvm_ioctls::VmFd>,
+    /// Slot numbers in use by guest address, and numbers given back.
+    slots: std::sync::Mutex<(std::collections::HashMap<u64, u32>, Vec<u32>, u32)>,
+}
+
+impl crate::memory::Mapper for KvmMapper {
+    unsafe fn map(&self, gpa: u64, host: *mut u8, len: u64) -> Result<()> {
+        let mut slots = self.slots.lock().unwrap();
+        if slots.0.contains_key(&gpa) {
+            return Err(Error::new(format!(
+                "guest address {gpa:#x} is already mapped"
+            )));
+        }
+        let slot = match slots.1.pop() {
+            Some(slot) => slot,
+            None => {
+                let slot = FIRST_DYNAMIC_SLOT + slots.2;
+                if slot > LAST_DYNAMIC_SLOT {
+                    return Err(Error::new("out of KVM memory slots"));
+                }
+                slots.2 += 1;
+                slot
+            }
+        };
+        let region = kvm_userspace_memory_region {
+            slot,
+            flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: len,
+            userspace_addr: host as u64,
+        };
+        // SAFETY: the caller keeps the host range valid until `unmap`.
+        match unsafe { self.vm.set_user_memory_region(region) } {
+            Ok(()) => {
+                slots.0.insert(gpa, slot);
+                Ok(())
+            }
+            Err(e) => {
+                slots.1.push(slot);
+                Err(Error::new(format!(
+                    "mapping host memory at guest address {gpa:#x}: {e}"
+                )))
+            }
+        }
+    }
+
+    fn unmap(&self, gpa: u64, _len: u64) -> Result<()> {
+        let mut slots = self.slots.lock().unwrap();
+        let Some(slot) = slots.0.remove(&gpa) else {
+            return Err(Error::new(format!(
+                "nothing is mapped at guest address {gpa:#x}"
+            )));
+        };
+        // A slot of size zero is a deleted slot.
+        let region = kvm_userspace_memory_region {
+            slot,
+            flags: 0,
+            guest_phys_addr: gpa,
+            memory_size: 0,
+            userspace_addr: 0,
+        };
+        // SAFETY: removes a mapping; nothing is dereferenced.
+        unsafe { self.vm.set_user_memory_region(region) }
+            .map_err(|e| Error::new(format!("unmapping guest address {gpa:#x}: {e}")))?;
+        slots.1.push(slot);
+        Ok(())
+    }
 }
 
 fn kick_signal() -> libc::c_int {

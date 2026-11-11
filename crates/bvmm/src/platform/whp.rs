@@ -333,6 +333,7 @@ struct Api {
     set_partition_property:
         unsafe extern "system" fn(Partition, u32, *const c_void, u32) -> HRESULT,
     map_gpa_range: unsafe extern "system" fn(Partition, *mut c_void, u64, u64, u32) -> HRESULT,
+    unmap_gpa_range: unsafe extern "system" fn(Partition, u64, u64) -> HRESULT,
     create_virtual_processor: unsafe extern "system" fn(Partition, u32, u32) -> HRESULT,
     delete_virtual_processor: unsafe extern "system" fn(Partition, u32) -> HRESULT,
     run_virtual_processor: unsafe extern "system" fn(Partition, u32, *mut c_void, u32) -> HRESULT,
@@ -407,6 +408,7 @@ impl Api {
             delete_partition: sym!(hv, "WHvDeletePartition"),
             set_partition_property: sym!(hv, "WHvSetPartitionProperty"),
             map_gpa_range: sym!(hv, "WHvMapGpaRange"),
+            unmap_gpa_range: sym!(hv, "WHvUnmapGpaRange"),
             create_virtual_processor: sym!(hv, "WHvCreateVirtualProcessor"),
             delete_virtual_processor: sym!(hv, "WHvDeleteVirtualProcessor"),
             run_virtual_processor: sym!(hv, "WHvRunVirtualProcessor"),
@@ -549,6 +551,36 @@ struct SendPartition(Partition);
 // SAFETY: WHP partition handles are usable from any thread; WHvRequestInterrupt is thread-safe.
 unsafe impl Send for SendPartition {}
 unsafe impl Sync for SendPartition {}
+
+/// Maps host memory into the guest with `WHvMapGpaRange`.
+struct WhpMapper {
+    api: &'static Api,
+    partition: SendPartition,
+}
+
+impl crate::memory::Mapper for WhpMapper {
+    unsafe fn map(&self, gpa: u64, host: *mut u8, len: u64) -> Result<()> {
+        /// Read and write; device memory is not for running code.
+        const MAP_READ_WRITE: u32 = 0x3;
+        // SAFETY: the caller keeps the host range valid until `unmap`.
+        let hr = unsafe {
+            (self.api.map_gpa_range)(
+                self.partition.0,
+                host as *mut c_void,
+                gpa,
+                len,
+                MAP_READ_WRITE,
+            )
+        };
+        check(hr, "mapping host memory into the guest")
+    }
+
+    fn unmap(&self, gpa: u64, len: u64) -> Result<()> {
+        // SAFETY: removes a mapping; nothing is dereferenced.
+        let hr = unsafe { (self.api.unmap_gpa_range)(self.partition.0, gpa, len) };
+        check(hr, "unmapping host memory from the guest")
+    }
+}
 
 fn set_property<T>(api: &Api, p: Partition, code: u32, value: &T, what: &str) -> Result<()> {
     // SAFETY: `value` points to a live T of the stated size.
@@ -734,6 +766,7 @@ pub fn run(
         let _ =
             unsafe { (api.request_interrupt)(p.0, &control, size_of::<InterruptControl>() as u32) };
     };
+    devices.set_mapper(Box::new(WhpMapper { api, partition: p }));
     devices.set_irq_route(IrqRoute::Ioapic(Box::new(deliver)));
     // An MSI message names its local APIC interrupt directly.
     devices.set_msi_route(Box::new(move |address, data| {

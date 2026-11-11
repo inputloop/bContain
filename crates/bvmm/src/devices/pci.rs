@@ -29,6 +29,12 @@ const BAR_BASE: u32 = 0xc000_0000;
 const BAR_STRIDE: u32 = 0x1_0000;
 const BAR0_SIZE: u32 = 0x4000;
 const BAR1_SIZE: u32 = 0x1000;
+/// Shared-memory windows sit far above any guest RAM (which ends below
+/// 256 GiB + 1 GiB), one per slot, 64 GiB apart.
+const SHM_BASE: u64 = 0x80_0000_0000;
+const SHM_STRIDE: u64 = 0x10_0000_0000;
+/// Where the shared-memory capability goes in configuration space.
+const SHM_CAP: usize = 0x94;
 
 // Layout of BAR0.
 const COMMON: u64 = 0x0000;
@@ -94,6 +100,9 @@ pub struct VirtioPci {
     config: [u8; 256],
     command: u16,
     bars: [u32; 2],
+    /// A shared-memory window in 64-bit BAR 2: its size, and the BAR's two
+    /// registers as the guest last wrote them.
+    shm: Option<(u64, [u32; 2])>,
     msix_control: u16,
     msix: Vec<MsixEntry>,
     dev: Box<dyn VirtioDevice>,
@@ -152,10 +161,31 @@ impl VirtioPci {
         }
         put32(&mut c, 0x80 + 16, NOTIFY_MULTIPLIER);
         let base = BAR_BASE + slot as u32 * BAR_STRIDE;
+        let mut dev = dev;
+        let shm = dev.shm_region().map(|(id, size)| {
+            let size = size.next_power_of_two().max(0x1000);
+            let gpa = SHM_BASE + slot as u64 * SHM_STRIDE;
+            // struct virtio_pci_cap64: the usual capability, then the high
+            // halves of offset and length. Type 8: shared memory.
+            c[0x80 + 1] = SHM_CAP as u8;
+            c[SHM_CAP] = 0x09;
+            c[SHM_CAP + 1] = 0;
+            c[SHM_CAP + 2] = 24;
+            c[SHM_CAP + 3] = 8;
+            c[SHM_CAP + 4] = 2; // BAR 2
+            c[SHM_CAP + 5] = id;
+            put32(&mut c, SHM_CAP + 8, 0);
+            put32(&mut c, SHM_CAP + 12, size as u32);
+            put32(&mut c, SHM_CAP + 16, 0);
+            put32(&mut c, SHM_CAP + 20, (size >> 32) as u32);
+            dev.set_shm_base(gpa);
+            (size, [gpa as u32, (gpa >> 32) as u32])
+        });
         VirtioPci {
             config: c,
             command: 0,
             bars: [base, base + 0x8000],
+            shm,
             msix_control: 0,
             msix: vec![
                 MsixEntry {
@@ -181,6 +211,9 @@ impl VirtioPci {
             0x04 => self.command as u32 | (get32(&self.config, 0x04) & 0xffff_0000),
             0x10 => self.bars[0],
             0x14 => self.bars[1],
+            // Memory, 64-bit, prefetchable.
+            0x18 if self.shm.is_some() => self.shm.map_or(0, |(_, r)| r[0]) | 0xc,
+            0x1c if self.shm.is_some() => self.shm.map_or(0, |(_, r)| r[1]),
             0x40 => {
                 let fixed = get32(&self.config, 0x40) & 0x3fff_ffff;
                 fixed | (self.msix_control as u32) << 16
@@ -195,6 +228,19 @@ impl VirtioPci {
             0x04 => self.command = v as u16 & 0x0407,
             0x10 => self.bars[0] = v & !(BAR0_SIZE - 1),
             0x14 => self.bars[1] = v & !(BAR1_SIZE - 1),
+            // The guest sizes the window by writing all ones and reading
+            // back. Mappings are made at the address the window was given
+            // at start, so the guest must leave it there; Linux does.
+            0x18 => {
+                if let Some((size, r)) = &mut self.shm {
+                    r[0] = v & !((*size - 1) as u32) & !0xf;
+                }
+            }
+            0x1c => {
+                if let Some((size, r)) = &mut self.shm {
+                    r[1] = v & !(((*size - 1) >> 32) as u32);
+                }
+            }
             0x40 => {
                 let was_blocked = self.msix_blocked();
                 self.msix_control = (v >> 16) as u16 & (MSIX_ENABLE | MSIX_FUNCTION_MASK);
@@ -730,6 +776,77 @@ mod tests {
         }
         assert_eq!(seen, vec![(1, 0), (3, 0x1000), (4, 0x2000), (2, 0x3000)]);
         assert_eq!(cfg_read(&mut b, 1, 0x90), NOTIFY_MULTIPLIER);
+    }
+
+    /// A device that only has a shared-memory window, and notes where it
+    /// was told the window is.
+    struct Windowed(Arc<std::sync::Mutex<u64>>);
+
+    impl VirtioDevice for Windowed {
+        fn device_type(&self) -> u32 {
+            crate::virtio::TYPE_GPU
+        }
+        fn features(&self) -> u64 {
+            0
+        }
+        fn queue_max_sizes(&self) -> Vec<u16> {
+            vec![64]
+        }
+        fn read_config(&self, _: u64, data: &mut [u8]) {
+            data.fill(0);
+        }
+        fn notify(&mut self, _: usize, _: &mut Queue, _: &GuestMemory) -> bool {
+            false
+        }
+        fn shm_region(&self) -> Option<(u8, u64)> {
+            Some((1, 8 << 30))
+        }
+        fn set_shm_base(&mut self, gpa: u64) {
+            *self.0.lock().unwrap() = gpa;
+        }
+    }
+
+    #[test]
+    fn a_shared_memory_window_is_a_64_bit_bar_with_its_capability() {
+        let told = Arc::new(std::sync::Mutex::new(0u64));
+        let mut b = bus();
+        b.add_virtio(Box::new(Windowed(told.clone()))); // slot 2
+        let base = SHM_BASE + 2 * SHM_STRIDE;
+        assert_eq!(*told.lock().unwrap(), base, "the device knows its window");
+        // BAR 2: memory, 64-bit, prefetchable, at the window's address.
+        assert_eq!(cfg_read(&mut b, 2, 0x18), base as u32 | 0xc);
+        assert_eq!(cfg_read(&mut b, 2, 0x1c), (base >> 32) as u32);
+        // Sizing: all ones in, the size mask out; then the address goes back.
+        cfg_write(&mut b, 2, 0x18, 0xffff_ffff);
+        cfg_write(&mut b, 2, 0x1c, 0xffff_ffff);
+        let mask =
+            (cfg_read(&mut b, 2, 0x1c) as u64) << 32 | (cfg_read(&mut b, 2, 0x18) & !0xf) as u64;
+        assert_eq!(!mask + 1, 8 << 30, "8 GiB");
+        cfg_write(&mut b, 2, 0x18, base as u32);
+        cfg_write(&mut b, 2, 0x1c, (base >> 32) as u32);
+        assert_eq!(cfg_read(&mut b, 2, 0x1c), (base >> 32) as u32);
+        // The capability chain ends with type 8 naming BAR 2, id 1, 8 GiB.
+        let mut at = 0x40;
+        let mut last = 0;
+        while at != 0 {
+            last = at;
+            at = (cfg_read(&mut b, 2, at) >> 8) & 0xff;
+        }
+        let head = cfg_read(&mut b, 2, last);
+        assert_eq!(
+            (head & 0xff, (head >> 16) & 0xff, head >> 24),
+            (0x09, 24, 8)
+        );
+        assert_eq!(
+            cfg_read(&mut b, 2, last + 4) & 0xffff,
+            0x0102,
+            "BAR 2, id 1"
+        );
+        let length =
+            (cfg_read(&mut b, 2, last + 20) as u64) << 32 | cfg_read(&mut b, 2, last + 12) as u64;
+        assert_eq!(length, 8 << 30);
+        // A device without a window has no such BAR or capability.
+        assert_eq!(cfg_read(&mut b, 1, 0x18), 0);
     }
 
     #[test]
