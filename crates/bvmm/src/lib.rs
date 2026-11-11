@@ -21,6 +21,7 @@ use std::sync::{Arc, Mutex};
 pub mod boot;
 pub mod devices;
 pub mod disk;
+pub mod gfxstream;
 pub mod layout;
 pub mod memory;
 pub mod mptable;
