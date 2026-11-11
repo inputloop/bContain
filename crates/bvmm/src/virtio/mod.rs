@@ -12,6 +12,7 @@ pub mod input;
 pub mod net;
 pub mod queue;
 pub mod rng;
+pub mod snd;
 pub mod vsock;
 
 use crate::memory::GuestMemory;
@@ -25,6 +26,7 @@ pub const TYPE_RNG: u32 = 4;
 pub const TYPE_GPU: u32 = 16;
 pub const TYPE_INPUT: u32 = 18;
 pub const TYPE_VSOCK: u32 = 19;
+pub const TYPE_SOUND: u32 = 25;
 
 /// `VIRTIO_F_VERSION_1`: the device follows the 1.x specification.
 pub const F_VERSION_1: u64 = 1 << 32;

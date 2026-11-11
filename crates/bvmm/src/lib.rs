@@ -221,6 +221,9 @@ pub struct VmConfig {
     pub vsock_cid: Option<u64>,
     /// Give the guest a hardware random number source.
     pub rng: bool,
+    /// A sound card: one playback and one capture stream. See
+    /// [`virtio::snd::Sound`].
+    pub sound: Option<virtio::snd::Sound>,
     /// Network cards, in order: the first is `eth0` in a Linux guest. See
     /// [`net::user_nat`] for one with the host's internet behind it.
     pub nets: Vec<virtio::net::Net>,
@@ -292,6 +295,9 @@ pub fn run_linux(
     for net in &cfg.nets {
         bus.add_virtio(Box::new(net.clone()));
     }
+    if let Some(sound) = &cfg.sound {
+        bus.add_virtio(Box::new(sound.clone()));
+    }
     if bus.len() > devices::pci::MAX_DEVICES {
         return Err(Error::new(format!(
             "{} PCI devices asked for; the bus holds {}",
@@ -320,6 +326,14 @@ pub fn run_linux(
     {
         let machine = Arc::downgrade(&devices);
         fences.set_wake(Box::new(move || {
+            if let Some(d) = machine.upgrade() {
+                d.poll_devices();
+            }
+        }));
+    }
+    if let Some(sound) = &cfg.sound {
+        let machine = Arc::downgrade(&devices);
+        sound.set_wake(Box::new(move || {
             if let Some(d) = machine.upgrade() {
                 d.poll_devices();
             }
