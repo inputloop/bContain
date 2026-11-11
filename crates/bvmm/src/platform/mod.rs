@@ -21,7 +21,7 @@ pub mod whp;
 pub const NEEDS_IOAPIC: bool = cfg!(windows);
 
 /// The most virtual processors this platform's backend can run.
-pub const MAX_CPUS: u8 = if cfg!(windows) { 1 } else { 64 };
+pub const MAX_CPUS: u8 = 64;
 
 /// Run the guest until it resets, halts or fails.
 pub fn run(

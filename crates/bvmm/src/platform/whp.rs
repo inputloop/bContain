@@ -148,6 +148,12 @@ impl RunVpExitContext {
     fn apic_eoi_vector(&self) -> u32 {
         self.detail[0] as u32
     }
+    /// WHV_X64_CPUID_ACCESS_CONTEXT: the asked Rax, Rcx, Rdx, Rbx, then the
+    /// hypervisor's own answer in the same order.
+    fn cpuid(&self) -> (u32, [u64; 4]) {
+        let d = &self.detail;
+        (d[0] as u32, [d[4], d[5], d[6], d[7]])
+    }
 }
 
 #[repr(C)]
@@ -245,6 +251,10 @@ const _: () = {
 };
 
 // Register names (WHV_REGISTER_NAME).
+const RAX: u32 = 0x00;
+const RCX: u32 = 0x01;
+const RDX: u32 = 0x02;
+const RBX: u32 = 0x03;
 const RSP: u32 = 0x04;
 const RSI: u32 = 0x06;
 const RIP: u32 = 0x10;
@@ -263,8 +273,13 @@ const CR0: u32 = 0x1c;
 const CR3: u32 = 0x1e;
 const CR4: u32 = 0x1f;
 const EFER: u32 = 0x2001;
+/// WHvRegisterInternalActivityState; bit 0 is StartupSuspend ("waiting for
+/// the start-up message from the boot processor").
+const INTERNAL_ACTIVITY_STATE: u32 = 0x4;
 
 // Partition properties.
+const PROP_EXTENDED_VM_EXITS: u32 = 0x1;
+const PROP_CPUID_EXIT_LIST: u32 = 0x1003;
 const PROP_LOCAL_APIC_EMULATION_MODE: u32 = 0x1005;
 const PROP_SYNTHETIC_PROCESSOR_FEATURES_BANKS: u32 = 0x100c;
 const PROP_PROCESSOR_COUNT: u32 = 0x1fff;
@@ -284,7 +299,19 @@ const EXIT_UNSUPPORTED_FEATURE: u32 = 0x6;
 const EXIT_INTERRUPT_WINDOW: u32 = 0x7;
 const EXIT_HALT: u32 = 0x8;
 const EXIT_APIC_EOI: u32 = 0x9;
+const EXIT_CPUID: u32 = 0x1001;
 const EXIT_CANCELED: u32 = 0x2001;
+
+/// The Hyper-V CPUID leaf that lists what the guest may use, and the bit in
+/// its EAX that says the guest may rely on the time-stamp counter
+/// (HV_ACCESS_TSC_INVARIANT). WHP has no setting for that bit, and Linux
+/// refuses the counter as a clock without it ("Marking TSC unstable due to
+/// running on Hyper-V"), leaving a guest that lacks the Hyper-V clock driver
+/// (Android's kernel) with a clock that ticks only 250 times a second. WHP
+/// keeps the counter steady, so bvmm answers this one leaf itself and adds
+/// the bit.
+const HV_CPUID_FEATURES: u32 = 0x4000_0003;
+const HV_ACCESS_TSC_INVARIANT: u64 = 1 << 15;
 
 const MAP_READ_WRITE_EXECUTE: u32 = 0x7;
 const S_OK: HRESULT = 0;
@@ -309,6 +336,7 @@ struct Api {
     create_virtual_processor: unsafe extern "system" fn(Partition, u32, u32) -> HRESULT,
     delete_virtual_processor: unsafe extern "system" fn(Partition, u32) -> HRESULT,
     run_virtual_processor: unsafe extern "system" fn(Partition, u32, *mut c_void, u32) -> HRESULT,
+    cancel_run: unsafe extern "system" fn(Partition, u32, u32) -> HRESULT,
     get_registers:
         unsafe extern "system" fn(Partition, u32, *const u32, u32, *mut RegisterValue) -> HRESULT,
     set_registers:
@@ -382,6 +410,7 @@ impl Api {
             create_virtual_processor: sym!(hv, "WHvCreateVirtualProcessor"),
             delete_virtual_processor: sym!(hv, "WHvDeleteVirtualProcessor"),
             run_virtual_processor: sym!(hv, "WHvRunVirtualProcessor"),
+            cancel_run: sym!(hv, "WHvCancelRunVirtualProcessor"),
             get_registers: sym!(hv, "WHvGetVirtualProcessorRegisters"),
             set_registers: sym!(hv, "WHvSetVirtualProcessorRegisters"),
             request_interrupt: sym!(hv, "WHvRequestInterrupt"),
@@ -408,23 +437,19 @@ fn check(hr: HRESULT, what: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Running
 
-/// Deletes the partition (and its vCPU and emulator) however `run` exits.
+/// Deletes the partition and its vCPUs however `run` exits.
 struct Vm<'a> {
     api: &'a Api,
     partition: Partition,
-    vcpu: bool,
-    emulator: Emulator,
+    vcpus: u32,
 }
 
 impl Drop for Vm<'_> {
     fn drop(&mut self) {
         // SAFETY: handles created by this module and not yet released.
         unsafe {
-            if !self.emulator.is_null() {
-                (self.api.emulator_destroy)(self.emulator);
-            }
-            if self.vcpu {
-                (self.api.delete_virtual_processor)(self.partition, 0);
+            for vp in 0..self.vcpus {
+                (self.api.delete_virtual_processor)(self.partition, vp);
             }
             (self.api.delete_partition)(self.partition);
         }
@@ -435,6 +460,7 @@ impl Drop for Vm<'_> {
 struct CallbackContext<'a> {
     api: &'a Api,
     partition: Partition,
+    vp: u32,
     mem: &'a GuestMemory,
     devices: &'a Devices,
 }
@@ -487,7 +513,7 @@ unsafe extern "system" fn get_registers_callback(
     values: *mut RegisterValue,
 ) -> HRESULT {
     let c = &*(ctx as *const CallbackContext);
-    (c.api.get_registers)(c.partition, 0, names, count, values)
+    (c.api.get_registers)(c.partition, c.vp, names, count, values)
 }
 
 unsafe extern "system" fn set_registers_callback(
@@ -497,7 +523,7 @@ unsafe extern "system" fn set_registers_callback(
     values: *const RegisterValue,
 ) -> HRESULT {
     let c = &*(ctx as *const CallbackContext);
-    (c.api.set_registers)(c.partition, 0, names, count, values)
+    (c.api.set_registers)(c.partition, c.vp, names, count, values)
 }
 
 unsafe extern "system" fn translate_callback(
@@ -512,7 +538,7 @@ unsafe extern "system" fn translate_callback(
         result_code: 0,
         reserved: 0,
     };
-    let hr = (c.api.translate_gva)(c.partition, 0, gva, flags, &mut r, gpa);
+    let hr = (c.api.translate_gva)(c.partition, c.vp, gva, flags, &mut r, gpa);
     *result = r.result_code;
     hr
 }
@@ -543,11 +569,7 @@ pub fn run(
     devices: Arc<Devices>,
     cpus: u8,
 ) -> Result<Outcome> {
-    if cpus != 1 {
-        return Err(Error::new(
-            "bvmm runs one virtual processor on Windows Hypervisor Platform for now",
-        ));
-    }
+    let count = cpus.max(1) as u32;
     // Leaked on purpose: the interrupt route outlives this call by a moment
     // when the input thread races shutdown, and the DLLs stay loaded anyway.
     let api: &'static Api = Box::leak(Box::new(Api::load()?));
@@ -561,15 +583,14 @@ pub fn run(
     let mut vm = Vm {
         api,
         partition,
-        vcpu: false,
-        emulator: null_mut(),
+        vcpus: 0,
     };
 
     set_property(
         api,
         partition,
         PROP_PROCESSOR_COUNT,
-        &1u32,
+        &count,
         "setting the processor count",
     )?;
     set_property(
@@ -599,6 +620,27 @@ pub fn run(
         // Without them the kernel must calibrate its timers on a PIT bvmm does not emulate.
         eprintln!("bvmm: warning: {e}; the guest may not find a timer");
     }
+    // Ask to answer one CPUID leaf ourselves; see HV_CPUID_FEATURES. If
+    // this Windows cannot do that, the guest only loses its precise clock.
+    let cpuid_exits = set_property(
+        api,
+        partition,
+        PROP_EXTENDED_VM_EXITS,
+        &1u64,
+        "enabling CPUID exits",
+    )
+    .and_then(|()| {
+        set_property(
+            api,
+            partition,
+            PROP_CPUID_EXIT_LIST,
+            &[HV_CPUID_FEATURES],
+            "choosing the CPUID leaf to answer",
+        )
+    });
+    if let Err(e) = cpuid_exits {
+        eprintln!("bvmm: warning: {e}; the guest's clock may be coarse");
+    }
     // SAFETY: valid partition handle.
     check(
         unsafe { (api.setup_partition)(partition) },
@@ -619,12 +661,26 @@ pub fn run(
             "mapping guest memory",
         )?;
     }
-    // SAFETY: valid partition handle.
-    check(
-        unsafe { (api.create_virtual_processor)(partition, 0, 0) },
-        "creating the virtual processor",
-    )?;
-    vm.vcpu = true;
+    for vp in 0..count {
+        // SAFETY: valid partition handle.
+        check(
+            unsafe { (api.create_virtual_processor)(partition, vp, 0) },
+            "creating a virtual processor",
+        )?;
+        vm.vcpus = vp + 1;
+        if vp > 0 {
+            // Secondary processors wait for the boot processor to start
+            // them; the hypervisor's local APIC then does the starting.
+            let suspended = RegisterValue::u64(1);
+            // SAFETY: one name, one value; valid partition and vCPU.
+            check(
+                unsafe {
+                    (api.set_registers)(partition, vp, &INTERNAL_ACTIVITY_STATE, 1, &suspended)
+                },
+                "parking a secondary processor",
+            )?;
+        }
+    }
 
     let names = [
         RIP, RSI, RSP, RFLAGS, CS, DS, ES, FS, GS, SS, TR, LDTR, GDTR, IDTR, CR0, CR3, CR4, EFER,
@@ -664,21 +720,6 @@ pub fn run(
         "setting the boot registers",
     )?;
 
-    let callbacks = EmulatorCallbacks {
-        size: size_of::<EmulatorCallbacks>() as u32,
-        reserved: 0,
-        io: io_callback,
-        memory: memory_callback,
-        get_registers: get_registers_callback,
-        set_registers: set_registers_callback,
-        translate_gva_page: translate_callback,
-    };
-    // SAFETY: callbacks struct is valid for the call; out-pointer to a field.
-    check(
-        unsafe { (api.emulator_create)(&callbacks, &mut vm.emulator) },
-        "creating the instruction emulator",
-    )?;
-
     let p = SendPartition(partition);
     let deliver = move |i: Interrupt| {
         let p = p;
@@ -699,11 +740,84 @@ pub fn run(
         deliver(crate::devices::pci::decode_msi(address, data))
     }));
 
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<Result<Outcome>>();
+    let devices = &*devices;
+    let stop = &stop;
+    std::thread::scope(|scope| {
+        for vp in 0..count {
+            let done_tx = done_tx.clone();
+            scope.spawn(move || {
+                let p = p;
+                let _ = done_tx.send(run_vcpu(api, p.0, vp, mem, devices, stop));
+            });
+        }
+        drop(done_tx);
+        // The first processor to finish decides the outcome.
+        let outcome = done_rx
+            .recv()
+            .unwrap_or_else(|_| Err(Error::new("WHP: the vCPU threads vanished")));
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Bring the others out of the hypervisor. A cancel can arrive just
+        // before a processor goes back in, so repeat until all have left.
+        let mut left = count - 1;
+        while left > 0 {
+            for vp in 0..count {
+                // SAFETY: valid partition; cancelling an idle vCPU is harmless.
+                unsafe { (api.cancel_run)(p.0, vp, 0) };
+            }
+            if done_rx
+                .recv_timeout(std::time::Duration::from_millis(10))
+                .is_ok()
+            {
+                left -= 1;
+            }
+        }
+        outcome
+    })
+}
+
+/// Run one virtual processor until the guest resets, halts or fails, or
+/// `stop` is set.
+fn run_vcpu(
+    api: &'static Api,
+    partition: Partition,
+    vp: u32,
+    mem: &GuestMemory,
+    devices: &Devices,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Outcome> {
+    /// Destroys the instruction emulator when the processor stops.
+    struct OwnedEmulator(&'static Api, Emulator);
+    impl Drop for OwnedEmulator {
+        fn drop(&mut self) {
+            // SAFETY: created by emulator_create below, destroyed once.
+            unsafe { (self.0.emulator_destroy)(self.1) };
+        }
+    }
+    let callbacks = EmulatorCallbacks {
+        size: size_of::<EmulatorCallbacks>() as u32,
+        reserved: 0,
+        io: io_callback,
+        memory: memory_callback,
+        get_registers: get_registers_callback,
+        set_registers: set_registers_callback,
+        translate_gva_page: translate_callback,
+    };
+    let mut emulator: Emulator = null_mut();
+    // SAFETY: callbacks struct is valid for the call; out-pointer to a local.
+    check(
+        unsafe { (api.emulator_create)(&callbacks, &mut emulator) },
+        "creating the instruction emulator",
+    )?;
+    let emulator = OwnedEmulator(api, emulator);
+
     let mut cb = CallbackContext {
         api,
         partition,
+        vp,
         mem,
-        devices: &devices,
+        devices,
     };
     let cb_ptr = &mut cb as *mut CallbackContext as *mut c_void;
     let mut ctx: RunVpExitContext = RunVpExitContext {
@@ -721,14 +835,14 @@ pub fn run(
         detail: [0; 22],
     };
     loop {
-        if devices.reset_requested() {
+        if devices.reset_requested() || stop.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(Outcome::Reset);
         }
         // SAFETY: ctx is a correctly sized, aligned exit-context buffer.
         let hr = unsafe {
             (api.run_virtual_processor)(
                 partition,
-                0,
+                vp,
                 &mut ctx as *mut _ as *mut c_void,
                 size_of::<RunVpExitContext>() as u32,
             )
@@ -740,7 +854,7 @@ pub fn run(
                 // SAFETY: contexts come from this exit; cb outlives the call.
                 let hr = unsafe {
                     (api.emulator_try_io)(
-                        vm.emulator,
+                        emulator.1,
                         cb_ptr,
                         &ctx.vp,
                         ctx.io_port_access(),
@@ -760,7 +874,7 @@ pub fn run(
                 // SAFETY: as above.
                 let hr = unsafe {
                     (api.emulator_try_mmio)(
-                        vm.emulator,
+                        emulator.1,
                         cb_ptr,
                         &ctx.vp,
                         ctx.memory_access(),
@@ -776,12 +890,42 @@ pub fn run(
                 }
             }
             EXIT_HALT => {
-                if ctx.vp.rflags & 0x200 == 0 {
+                // Only the boot processor halting for good ends the guest;
+                // Linux parks the others that way when it shuts down.
+                if ctx.vp.rflags & 0x200 == 0 && vp == 0 {
                     return Ok(Outcome::Halted);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             EXIT_APIC_EOI => devices.eoi(ctx.apic_eoi_vector() as u8),
+            EXIT_CPUID => {
+                let (leaf, mut answer) = ctx.cpuid();
+                if leaf == HV_CPUID_FEATURES {
+                    answer[0] |= HV_ACCESS_TSC_INVARIANT;
+                }
+                let names = [RAX, RCX, RDX, RBX, RIP];
+                let next = ctx.vp.rip + (ctx.vp.instruction_length_cr8 & 0xf) as u64;
+                let values = [
+                    RegisterValue::u64(answer[0]),
+                    RegisterValue::u64(answer[1]),
+                    RegisterValue::u64(answer[2]),
+                    RegisterValue::u64(answer[3]),
+                    RegisterValue::u64(next),
+                ];
+                // SAFETY: arrays of equal length; valid partition and vCPU.
+                check(
+                    unsafe {
+                        (api.set_registers)(
+                            partition,
+                            vp,
+                            names.as_ptr(),
+                            names.len() as u32,
+                            values.as_ptr(),
+                        )
+                    },
+                    "answering CPUID",
+                )?;
+            }
             EXIT_INTERRUPT_WINDOW | EXIT_CANCELED => {}
             EXIT_UNRECOVERABLE_EXCEPTION => {
                 return Err(Error::new(format!(
