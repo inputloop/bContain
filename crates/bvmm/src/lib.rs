@@ -224,6 +224,8 @@ pub struct VmConfig {
     /// A sound card: one playback and one capture stream. See
     /// [`virtio::snd::Sound`].
     pub sound: Option<virtio::snd::Sound>,
+    /// A camera. See [`virtio::media::Camera`].
+    pub camera: Option<virtio::media::Camera>,
     /// Network cards, in order: the first is `eth0` in a Linux guest. See
     /// [`net::user_nat`] for one with the host's internet behind it.
     pub nets: Vec<virtio::net::Net>,
@@ -298,6 +300,10 @@ pub fn run_linux(
     if let Some(sound) = &cfg.sound {
         bus.add_virtio(Box::new(sound.clone()));
     }
+    if let Some(camera) = &cfg.camera {
+        camera.set_mapper(mapper.clone());
+        bus.add_virtio(Box::new(camera.clone()));
+    }
     if bus.len() > devices::pci::MAX_DEVICES {
         return Err(Error::new(format!(
             "{} PCI devices asked for; the bus holds {}",
@@ -326,6 +332,14 @@ pub fn run_linux(
     {
         let machine = Arc::downgrade(&devices);
         fences.set_wake(Box::new(move || {
+            if let Some(d) = machine.upgrade() {
+                d.poll_devices();
+            }
+        }));
+    }
+    if let Some(camera) = &cfg.camera {
+        let machine = Arc::downgrade(&devices);
+        camera.set_wake(Box::new(move || {
             if let Some(d) = machine.upgrade() {
                 d.poll_devices();
             }

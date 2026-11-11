@@ -9,6 +9,7 @@ pub mod console;
 pub mod gpu;
 pub mod gpu3d;
 pub mod input;
+pub mod media;
 pub mod net;
 pub mod queue;
 pub mod rng;
@@ -27,6 +28,7 @@ pub const TYPE_GPU: u32 = 16;
 pub const TYPE_INPUT: u32 = 18;
 pub const TYPE_VSOCK: u32 = 19;
 pub const TYPE_SOUND: u32 = 25;
+pub const TYPE_MEDIA: u32 = 48;
 
 /// `VIRTIO_F_VERSION_1`: the device follows the 1.x specification.
 pub const F_VERSION_1: u64 = 1 << 32;
