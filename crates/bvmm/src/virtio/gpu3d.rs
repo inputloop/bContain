@@ -1041,7 +1041,7 @@ mod tests {
         }
         fn read_pixels(&self, t: &Transfer, out: &mut [u8]) -> Result<()> {
             // Each pixel says where it is: (x, y, 0, 255).
-            for (i, px) in out.chunks_exact_mut(4).enumerate() {
+            for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 px.copy_from_slice(&[
                     (i as u32 % t.area.w) as u8,
                     (i as u32 / t.area.w) as u8,

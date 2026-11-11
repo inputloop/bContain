@@ -98,7 +98,7 @@ impl Frame {
     pub fn to_rgb(&self) -> Vec<u8> {
         let (r, g, b) = self.format.rgb_offsets();
         let mut out = Vec::with_capacity(self.pixels.len() / 4 * 3);
-        for px in self.pixels.chunks_exact(4) {
+        for px in self.pixels.as_chunks::<4>().0.iter() {
             out.extend_from_slice(&[px[r], px[g], px[b]]);
         }
         out
