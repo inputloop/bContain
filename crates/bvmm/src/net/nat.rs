@@ -220,6 +220,13 @@ struct State {
     epoch: Instant,
 }
 
+/// Whether to report name lookups and connections on standard error
+/// (`BVMM_NET_TRACE=1`), for finding out why a guest is not getting through.
+fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BVMM_NET_TRACE").is_some())
+}
+
 fn now() -> smoltcp::time::Instant {
     smoltcp::time::Instant::from(Instant::now())
 }
@@ -386,6 +393,10 @@ impl State {
         // stack on its own says nothing for an address that is not its own,
         // and the guest would wait out a long timeout.
         let refused = self.connections.len() >= MAX_CONNECTIONS || !forwardable(dst, &self.options);
+        if tracing() {
+            let how = if refused { "refused" } else { "opening" };
+            eprintln!("bvmm net: tcp {dst}:{dport} {how}");
+        }
         let mut socket = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER]),
             tcp::SocketBuffer::new(vec![0u8; TCP_BUFFER]),
@@ -633,6 +644,9 @@ impl State {
             let message = packet::dns_reply(query, question.end, addresses, rcode);
             packet::udp_frame(mac, GATEWAY_MAC, (NAME_SERVER, 53), client, &message)
         };
+        if tracing() {
+            eprintln!("bvmm net: lookup {} type {}", question.name, question.qtype);
+        }
         if question.qtype != packet::DNS_A {
             // No such record, but the name may exist: an empty answer, so
             // the guest goes on to ask for the IPv4 address.
@@ -660,6 +674,9 @@ impl State {
                 })
                 .unwrap_or_default();
             let rcode = if found.is_empty() { 3 } else { 0 }; // 3: no such name
+            if tracing() {
+                eprintln!("bvmm net: {name} is {found:?}");
+            }
             let data = packet::dns_reply(&query, end, &found, rcode);
             lookups.fetch_sub(1, Ordering::SeqCst);
             let _ = events.send(Event::Udp {
