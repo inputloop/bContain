@@ -48,12 +48,9 @@ impl Native {
                 Ok("host-tsc") => bvmm::platform::ClockSource::HostTsc,
                 _ => bvmm::platform::ClockSource::Paravirtual,
             },
-            display: None,
-            inputs: Vec::new(),
-            consoles: Vec::new(),
-            vsock_cid: None,
-            rng: false,
-            nets: Vec::new(),
+            // No display, input, network or other devices for containers;
+            // naming none of them keeps this building as the engine grows.
+            ..Default::default()
         })
     }
 }

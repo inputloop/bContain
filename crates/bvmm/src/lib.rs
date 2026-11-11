@@ -206,6 +206,13 @@ pub struct VmConfig {
     pub clock: platform::ClockSource,
     /// A screen for the guest. Keep a clone to read frames from.
     pub display: Option<virtio::gpu::Display>,
+    /// Draw the display with the host's GPU: the path of the gfxstream
+    /// library to load (see [`gfxstream`]). Without it the guest draws for
+    /// itself and the display only shows the result. Needs `display`.
+    ///
+    /// Starting gfxstream on a machine that cannot run it has been seen to
+    /// hang; check in a separate process first.
+    pub gfxstream: Option<std::path::PathBuf>,
     /// Input devices; keep each one's sender to push events.
     pub inputs: Vec<virtio::input::Input>,
     /// Console ports, `/dev/hvc0` upwards in a Linux guest, in order.
@@ -247,8 +254,28 @@ pub fn run_linux(
         let blk = virtio::blk::Block::open(&disk.path, disk.read_only)?;
         bus.add_virtio(Box::new(blk));
     }
+    let mapper = memory::MapperSlot::default();
+    let fences = Arc::new(virtio::gpu3d::Fences::default());
     if let Some(display) = &cfg.display {
-        bus.add_virtio(Box::new(virtio::gpu::Gpu::new(display.clone())));
+        match &cfg.gfxstream {
+            Some(library) => {
+                let (width, height) = display.size();
+                let done = fences.clone();
+                let renderer = gfxstream::Gfxstream::start(
+                    library,
+                    width,
+                    height,
+                    Box::new(move |fence| done.completed(fence)),
+                )?;
+                bus.add_virtio(Box::new(virtio::gpu3d::Gpu3d::new(
+                    display.clone(),
+                    Arc::new(renderer),
+                    fences.clone(),
+                    mapper.clone(),
+                )));
+            }
+            None => bus.add_virtio(Box::new(virtio::gpu::Gpu::new(display.clone()))),
+        }
     }
     for input in &cfg.inputs {
         bus.add_virtio(Box::new(input.clone()));
@@ -276,7 +303,7 @@ pub fn run_linux(
     let clock = platform::clock_kernel_params(cfg.clock);
     let cmdline = format!("{} {} {} {}", cfg.cmdline.trim(), KERNEL_PARAMS, pci, clock);
     let boot = boot::load_linux(&mem, &cfg.kernel, cfg.initrd.as_deref(), &cmdline)?;
-    let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, cpus);
+    let mut devices = Devices::new(console, platform::NEEDS_IOAPIC, cpus).with_mapper_slot(mapper);
     if !bus.is_empty() {
         devices = devices.with_pci(bus);
     }
@@ -285,6 +312,14 @@ pub fn run_linux(
         // A weak link: senders may outlive the machine.
         let machine = Arc::downgrade(&devices);
         input.set_wake(Box::new(move || {
+            if let Some(d) = machine.upgrade() {
+                d.poll_devices();
+            }
+        }));
+    }
+    {
+        let machine = Arc::downgrade(&devices);
+        fences.set_wake(Box::new(move || {
             if let Some(d) = machine.upgrade() {
                 d.poll_devices();
             }

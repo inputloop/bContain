@@ -92,6 +92,16 @@ impl GuestMemory {
         }
     }
 
+    /// The host address of guest range `gpa..gpa+len`, for handing the
+    /// guest's own memory to something that works on host pointers. The
+    /// range must lie within guest RAM; the pointer is valid as long as
+    /// this memory is.
+    pub fn host_ptr(&self, gpa: u64, len: usize) -> Result<*mut u8> {
+        let offset = self.check(gpa, len)?;
+        // SAFETY: `check` placed the range inside the allocation.
+        Ok(unsafe { self.ptr.add(offset) })
+    }
+
     pub fn write(&self, gpa: u64, data: &[u8]) -> Result<()> {
         let off = self.check(gpa, data.len())?;
         // SAFETY: bounds checked above; the source cannot overlap guest RAM.

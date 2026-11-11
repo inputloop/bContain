@@ -56,7 +56,7 @@ pub enum Format {
 }
 
 impl Format {
-    fn from_wire(v: u32) -> Option<Format> {
+    pub(crate) fn from_wire(v: u32) -> Option<Format> {
         Some(match v {
             1 => Format::Bgra,
             2 => Format::Bgrx,
@@ -149,6 +149,16 @@ impl Display {
         self.frame.lock().unwrap().clone()
     }
 
+    /// Show a new picture: `width * height * 4` bytes, rows top to bottom.
+    pub(crate) fn present(&self, width: u32, height: u32, format: Format, pixels: Vec<u8>) {
+        let mut frame = self.frame.lock().unwrap();
+        frame.width = width;
+        frame.height = height;
+        frame.format = format;
+        frame.pixels = pixels;
+        frame.sequence += 1;
+    }
+
     /// How many times the guest has presented.
     pub fn sequence(&self) -> u64 {
         self.frame.lock().unwrap().sequence
@@ -173,11 +183,11 @@ pub struct Gpu {
     allocated: usize,
 }
 
-fn u32_at(b: &[u8], at: usize) -> Option<u32> {
+pub(crate) fn u32_at(b: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?))
 }
 
-fn u64_at(b: &[u8], at: usize) -> Option<u64> {
+pub(crate) fn u64_at(b: &[u8], at: usize) -> Option<u64> {
     Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?))
 }
 
