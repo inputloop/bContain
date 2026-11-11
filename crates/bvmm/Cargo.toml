@@ -7,6 +7,9 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# The TCP/IP stack behind the guest's network card (net::nat): it terminates
+# the guest's TCP connections so they can be re-made with host sockets.
+smoltcp = { version = "0.12", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "socket-tcp", "socket-icmp"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-ioctls = "0.25"

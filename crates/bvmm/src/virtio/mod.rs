@@ -8,6 +8,7 @@ pub mod blk;
 pub mod console;
 pub mod gpu;
 pub mod input;
+pub mod net;
 pub mod queue;
 pub mod rng;
 pub mod vsock;
@@ -16,6 +17,7 @@ use crate::memory::GuestMemory;
 use queue::Queue;
 
 /// Device type numbers from the specification (section 5).
+pub const TYPE_NET: u32 = 1;
 pub const TYPE_BLOCK: u32 = 2;
 pub const TYPE_CONSOLE: u32 = 3;
 pub const TYPE_RNG: u32 = 4;

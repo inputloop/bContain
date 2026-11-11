@@ -24,6 +24,7 @@ pub mod disk;
 pub mod layout;
 pub mod memory;
 pub mod mptable;
+pub mod net;
 pub mod platform;
 pub mod virtio;
 
@@ -212,6 +213,9 @@ pub struct VmConfig {
     pub vsock_cid: Option<u64>,
     /// Give the guest a hardware random number source.
     pub rng: bool,
+    /// Network cards, in order: the first is `eth0` in a Linux guest. See
+    /// [`net::user_nat`] for one with the host's internet behind it.
+    pub nets: Vec<virtio::net::Net>,
 }
 
 /// Boot `cfg` with the guest console on `console` and, if given, keyboard
@@ -257,6 +261,9 @@ pub fn run_linux(
     if cfg.rng {
         bus.add_virtio(Box::new(virtio::rng::Rng));
     }
+    for net in &cfg.nets {
+        bus.add_virtio(Box::new(net.clone()));
+    }
     if bus.len() > devices::pci::MAX_DEVICES {
         return Err(Error::new(format!(
             "{} PCI devices asked for; the bus holds {}",
@@ -277,6 +284,14 @@ pub fn run_linux(
         // A weak link: senders may outlive the machine.
         let machine = Arc::downgrade(&devices);
         input.set_wake(Box::new(move || {
+            if let Some(d) = machine.upgrade() {
+                d.poll_devices();
+            }
+        }));
+    }
+    for net in &cfg.nets {
+        let machine = Arc::downgrade(&devices);
+        net.set_wake(Box::new(move || {
             if let Some(d) = machine.upgrade() {
                 d.poll_devices();
             }
