@@ -20,8 +20,11 @@ use crate::virtio::{VirtioDevice, F_VERSION_1, STATUS_DRIVER_OK};
 
 pub const CONFIG_ADDRESS: u16 = 0xcf8;
 pub const CONFIG_DATA: u16 = 0xcfc;
-/// Slots 1 to 31 of bus 0; slot 0 is the host bridge.
-pub const MAX_DEVICES: usize = 31;
+/// Slot 0 of bus 0 is the host bridge. The first 31 devices are function 0
+/// of slots 1 to 31, as always; any more become functions 1 to 7 of slots
+/// counted down from 31, so that adding devices never moves the ones a
+/// guest may know by address (its system disk is 00:01.0).
+pub const MAX_DEVICES: usize = 31 + 31 * 7;
 
 /// Devices get their memory BARs here, 64 KiB apart, inside the 32-bit hole
 /// above guest RAM. The guest may move them; the current value is honoured.
@@ -29,10 +32,11 @@ const BAR_BASE: u32 = 0xc000_0000;
 const BAR_STRIDE: u32 = 0x1_0000;
 const BAR0_SIZE: u32 = 0x4000;
 const BAR1_SIZE: u32 = 0x1000;
-/// Shared-memory windows sit far above any guest RAM (which ends below
-/// 256 GiB + 1 GiB), one per slot, 64 GiB apart.
-const SHM_BASE: u64 = 0x80_0000_0000;
-const SHM_STRIDE: u64 = 0x10_0000_0000;
+/// Shared-memory windows are given out upward from here, or from just
+/// above guest RAM if that reaches higher. 64 GiB is low enough that the
+/// windows fit the 39-bit addresses of ordinary desktop and laptop
+/// processors (512 GiB), which a start "far above everything" does not.
+const SHM_BASE: u64 = 0x10_0000_0000;
 /// Where the shared-memory capability goes in configuration space.
 const SHM_CAP: usize = 0x94;
 
@@ -117,7 +121,9 @@ pub struct VirtioPci {
 }
 
 impl VirtioPci {
-    fn new(slot: u8, dev: Box<dyn VirtioDevice>) -> VirtioPci {
+    /// `slot` numbers the device from 1; `next_window` is where the next
+    /// shared-memory window may start, and is moved past any taken.
+    fn new(slot: usize, dev: Box<dyn VirtioDevice>, next_window: &mut u64) -> VirtioPci {
         let kind = dev.device_type();
         let queues: Vec<Queue> = dev.queue_max_sizes().into_iter().map(Queue::new).collect();
         let vectors = queues.len() as u16 + 1;
@@ -164,7 +170,9 @@ impl VirtioPci {
         let mut dev = dev;
         let shm = dev.shm_region().map(|(id, size)| {
             let size = size.next_power_of_two().max(0x1000);
-            let gpa = SHM_BASE + slot as u64 * SHM_STRIDE;
+            // A BAR sits at a multiple of its size.
+            let gpa = next_window.div_ceil(size) * size;
+            *next_window = gpa + size;
             // struct virtio_pci_cap64: the usual capability, then the high
             // halves of offset and length. Type 8: shared memory.
             c[0x80 + 1] = SHM_CAP as u8;
@@ -528,6 +536,17 @@ pub struct PciBus {
     bridge: [u8; 256],
     devices: Vec<VirtioPci>,
     mem: Arc<GuestMemory>,
+    next_window: u64,
+}
+
+/// Which device (numbered from 1; 0 is the host bridge) is at a slot and
+/// function. See [`MAX_DEVICES`].
+fn device_at(slot: usize, func: usize) -> usize {
+    if func == 0 {
+        slot
+    } else {
+        32 + (31 - slot) * 7 + (func - 1)
+    }
 }
 
 impl PciBus {
@@ -536,14 +555,16 @@ impl PciBus {
             address: 0,
             bridge: host_bridge(),
             devices: Vec::new(),
+            next_window: SHM_BASE.max(crate::layout::HIGH_MEMORY_START + mem.high_size()),
             mem,
         }
     }
 
     /// Put a virtio device in the next free slot (00:01.0 onwards).
     pub fn add_virtio(&mut self, dev: Box<dyn VirtioDevice>) {
-        let slot = self.devices.len() as u8 + 1;
-        self.devices.push(VirtioPci::new(slot, dev));
+        let slot = self.devices.len() + 1;
+        let device = VirtioPci::new(slot, dev, &mut self.next_window);
+        self.devices.push(device);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -554,19 +575,31 @@ impl PciBus {
         self.devices.len()
     }
 
-    /// The register the address latch points at: (slot, register), if it
-    /// names function 0 of a device on bus 0.
+    /// The register the address latch points at: (device, register), if it
+    /// names a device on bus 0. Device 0 is the host bridge.
     fn target(&self) -> Option<(usize, usize)> {
         let a = self.address;
         let (bus, slot, func) = ((a >> 16) & 0xff, (a >> 11) & 0x1f, (a >> 8) & 7);
-        (a & 0x8000_0000 != 0 && bus == 0 && func == 0 && slot as usize <= self.devices.len())
-            .then_some((slot as usize, (a & 0xfc) as usize))
+        if a & 0x8000_0000 == 0 || bus != 0 || (slot == 0 && func != 0) {
+            return None;
+        }
+        let device = device_at(slot as usize, func as usize);
+        (device <= self.devices.len()).then_some((device, (a & 0xfc) as usize))
     }
 
     fn read32(&self, slot: usize, reg: usize) -> u32 {
         match slot {
             0 => get32(&self.bridge, reg),
-            s => self.devices[s - 1].config_read32(reg),
+            s => {
+                let mut value = self.devices[s - 1].config_read32(reg);
+                // Header type, bit 7: "this slot has more functions". Set
+                // on function 0 of a slot whose other functions are used,
+                // or the guest would not look for them.
+                if reg == 0x0c && s <= 31 && device_at(s, 1) <= self.devices.len() {
+                    value |= 0x80 << 16;
+                }
+                value
+            }
         }
     }
 
@@ -811,7 +844,7 @@ mod tests {
         let told = Arc::new(std::sync::Mutex::new(0u64));
         let mut b = bus();
         b.add_virtio(Box::new(Windowed(told.clone()))); // slot 2
-        let base = SHM_BASE + 2 * SHM_STRIDE;
+        let base = SHM_BASE; // 64 GiB: above this test's RAM, a multiple of 8 GiB
         assert_eq!(*told.lock().unwrap(), base, "the device knows its window");
         // BAR 2: memory, 64-bit, prefetchable, at the window's address.
         assert_eq!(cfg_read(&mut b, 2, 0x18), base as u32 | 0xc);
@@ -847,6 +880,57 @@ mod tests {
         assert_eq!(length, 8 << 30);
         // A device without a window has no such BAR or capability.
         assert_eq!(cfg_read(&mut b, 1, 0x18), 0);
+    }
+
+    #[test]
+    fn more_than_31_devices_become_extra_functions_without_moving_the_first() {
+        let mut b = bus(); // one device, at 00:01.0
+        let id = |b: &mut PciBus, slot: u32, func: u32, reg: u32| {
+            b.io_out(
+                CONFIG_ADDRESS,
+                4,
+                0x8000_0000 | slot << 11 | func << 8 | reg,
+                &|_, _| {},
+            );
+            b.io_in(CONFIG_DATA, 4)
+        };
+        let before = id(&mut b, 1, 0, 0);
+        for _ in 1..33 {
+            b.add_virtio(Box::new(Echo { activated: None }));
+        }
+        // 33 devices: 31 at function 0, then 31.1 and 31.2.
+        assert_eq!(
+            id(&mut b, 1, 0, 0),
+            before,
+            "the first device has not moved"
+        );
+        assert_eq!(id(&mut b, 31, 0, 0) & 0xffff, 0x1af4);
+        assert_eq!(
+            id(&mut b, 31, 0, 0x0c) >> 16 & 0x80,
+            0x80,
+            "slot 31 says it has more functions"
+        );
+        assert_eq!(
+            id(&mut b, 30, 0, 0x0c) >> 16 & 0x80,
+            0,
+            "slot 30 has only one"
+        );
+        assert_eq!(id(&mut b, 31, 1, 0) & 0xffff, 0x1af4);
+        assert_eq!(id(&mut b, 31, 2, 0) & 0xffff, 0x1af4);
+        assert_eq!(id(&mut b, 31, 3, 0), 0xffff_ffff, "nothing there");
+        assert_eq!(id(&mut b, 30, 1, 0), 0xffff_ffff);
+        assert_eq!(
+            id(&mut b, 0, 1, 0),
+            0xffff_ffff,
+            "the bridge has one function"
+        );
+        // Each has its own registers.
+        let (a, c) = (id(&mut b, 31, 0, 0x10), id(&mut b, 31, 1, 0x10));
+        assert_ne!(a, c);
+        assert_eq!(
+            (MAX_DEVICES, device_at(31, 1), device_at(1, 7)),
+            (248, 32, 248)
+        );
     }
 
     #[test]
