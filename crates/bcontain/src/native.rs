@@ -53,6 +53,7 @@ impl Native {
             consoles: Vec::new(),
             vsock_cid: None,
             rng: false,
+            nets: Vec::new(),
         })
     }
 }
