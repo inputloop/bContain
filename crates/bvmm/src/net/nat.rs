@@ -21,6 +21,9 @@
 //!   and sent back.
 //! - **Names**: queries to 10.0.2.3 are answered with the host's resolver.
 //! - **Ping**: only the gateway answers.
+//! - **Pages**: the gateway can serve a few fixed pages at
+//!   `http://10.0.2.2/`, for what a guest should be able to read with no
+//!   internet at all; see [`Page`].
 //!
 //! IPv4 only. The guest cannot be reached from outside, and cannot reach
 //! the host's own loopback services.
@@ -62,6 +65,80 @@ pub struct Options {
     /// Let the guest reach the host's own loopback addresses (127.0.0.0/8).
     /// Off by default: services bound to loopback expect only local users.
     pub allow_loopback: bool,
+    /// Pages the gateway serves to the guest at `http://10.0.2.2/`.
+    pub pages: Vec<Page>,
+}
+
+/// One fixed page served by the gateway.
+#[derive(Debug, Clone)]
+pub struct Page {
+    /// As asked for, with its leading slash: `/help.html`.
+    pub path: String,
+    /// For example `text/html; charset=utf-8`.
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+/// Serve `pages` on a loopback port of the host's, for as long as `keep`
+/// is held somewhere. Connections to the gateway's port 80 are carried
+/// there like any other; nothing else is told the port.
+fn serve_pages(pages: Vec<Page>, keep: &Arc<()>) -> Option<SocketAddr> {
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).ok()?;
+    let addr = listener.local_addr().ok()?;
+    listener.set_nonblocking(true).ok()?;
+    let keep = Arc::downgrade(keep);
+    let pages = Arc::new(pages);
+    std::thread::spawn(move || {
+        while keep.strong_count() > 0 {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let pages = pages.clone();
+                    std::thread::spawn(move || answer_page(stream, &pages));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    });
+    Some(addr)
+}
+
+/// Answer one request for a page and close.
+fn answer_page(mut stream: TcpStream, pages: &[Page]) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(10)));
+    let mut request = Vec::new();
+    let mut buf = [0u8; 1024];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") && request.len() < 8192 {
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => request.extend_from_slice(&buf[..n]),
+            _ => break,
+        }
+    }
+    let request = String::from_utf8_lossy(&request);
+    let mut words = request.lines().next().unwrap_or("").split(' ');
+    let method = words.next().unwrap_or("");
+    let asked = words.next().unwrap_or("");
+    let path = asked.split(['?', '#']).next().unwrap_or("");
+    let page = pages.iter().find(|p| p.path == path);
+    let (status, kind, body): (&str, &str, &[u8]) = match (method, page) {
+        ("GET" | "HEAD", Some(p)) => ("200 OK", &p.content_type, &p.body),
+        ("GET" | "HEAD", None) => ("404 Not Found", "text/plain", b"Not found.\n"),
+        _ => ("405 Method Not Allowed", "text/plain", b"Not allowed.\n"),
+    };
+    let head = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
+         Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes());
+    if method != "HEAD" {
+        let _ = stream.write_all(body);
+    }
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Write);
+    // Let the reader finish before the socket goes away.
+    let _ = stream.read(&mut buf);
 }
 
 enum Event {
@@ -218,6 +295,10 @@ struct State {
     lookups: Arc<AtomicUsize>,
     guest_mac: Option<[u8; 6]>,
     epoch: Instant,
+    /// Where the gateway's pages are really served, if it has any.
+    pages_at: Option<SocketAddr>,
+    /// Held so that the page server stops when the network does.
+    _pages_keep: Arc<()>,
 }
 
 /// Whether to report name lookups and connections on standard error
@@ -258,7 +339,15 @@ impl State {
         // called, provided a route says that address is reached through us.
         let _ = iface.routes_mut().add_default_ipv4_route(GATEWAY);
         iface.set_any_ip(true);
+        let pages_keep = Arc::new(());
+        let pages_at = if options.pages.is_empty() {
+            None
+        } else {
+            serve_pages(options.pages.clone(), &pages_keep)
+        };
         State {
+            pages_at,
+            _pages_keep: pages_keep,
             events,
             options,
             phy,
@@ -392,7 +481,9 @@ impl State {
         // What may not be connected is still answered, and then reset: the
         // stack on its own says nothing for an address that is not its own,
         // and the guest would wait out a long timeout.
-        let refused = self.connections.len() >= MAX_CONNECTIONS || !forwardable(dst, &self.options);
+        let pages = self.pages_at.filter(|_| dst == GATEWAY && dport == 80);
+        let refused = self.connections.len() >= MAX_CONNECTIONS
+            || (pages.is_none() && !forwardable(dst, &self.options));
         if tracing() {
             let how = if refused { "refused" } else { "opening" };
             eprintln!("bvmm net: tcp {dst}:{dport} {how}");
@@ -435,7 +526,7 @@ impl State {
         }
         let events = self.events.clone();
         std::thread::spawn(move || {
-            let addr = SocketAddr::V4(SocketAddrV4::new(dst, dport));
+            let addr = pages.unwrap_or(SocketAddr::V4(SocketAddrV4::new(dst, dport)));
             let event = match TcpStream::connect_timeout(&addr, Duration::from_secs(15)) {
                 Ok(stream) => {
                     let _ = stream.set_nodelay(true);
@@ -766,8 +857,8 @@ mod tests {
     const GUEST_MAC: [u8; 6] = [2, 0, 0, 0, 0, 0x15];
 
     /// A NAT with the frames it sends the guest arriving on a channel.
-    fn nat(allow_loopback: bool) -> (Nat, Receiver<Vec<u8>>) {
-        let (nat, runner) = Nat::new(Options { allow_loopback });
+    fn nat(options: Options) -> (Nat, Receiver<Vec<u8>>) {
+        let (nat, runner) = Nat::new(options);
         let (tx, rx) = std::sync::mpsc::channel();
         runner.start(move |frame| tx.send(frame).is_ok(), || true);
         (nat, rx)
@@ -784,7 +875,14 @@ mod tests {
 
     impl Guest {
         fn new(allow_loopback: bool) -> Guest {
-            let (nat, from_nat) = nat(allow_loopback);
+            Guest::with(Options {
+                allow_loopback,
+                ..Default::default()
+            })
+        }
+
+        fn with(options: Options) -> Guest {
+            let (nat, from_nat) = nat(options);
             let mut phy = Phy::default();
             let config = Config::new(HardwareAddress::Ethernet(EthernetAddress(GUEST_MAC)));
             let mut iface = Interface::new(config, &mut phy, now());
@@ -897,6 +995,61 @@ mod tests {
         });
     }
 
+    /// Ask the gateway for `path` and give back the whole answer.
+    fn ask_gateway(guest: &mut Guest, path: &str, local: u16) -> String {
+        let h = guest.connect(GATEWAY, 80, local);
+        let request = format!("GET {path} HTTP/1.1\r\nHost: 10.0.2.2\r\n\r\n");
+        let (mut sent, mut got) = (false, Vec::new());
+        guest.pump("the gateway's answer", |sockets| {
+            let s = sockets.get_mut::<tcp::Socket>(h);
+            if s.can_send() && !sent {
+                s.send_slice(request.as_bytes()).unwrap();
+                sent = true;
+            }
+            while s.can_recv() {
+                let mut buf = [0u8; 4096];
+                let n = s.recv_slice(&mut buf).unwrap();
+                got.extend_from_slice(&buf[..n]);
+            }
+            sent && !s.may_recv()
+        });
+        String::from_utf8(got).unwrap()
+    }
+
+    #[test]
+    fn the_gateway_serves_its_pages_and_nothing_else() {
+        let body = "<h1>How to use this</h1>".repeat(3000); // more than one buffer
+        let mut guest = Guest::with(Options {
+            pages: vec![Page {
+                path: "/help.html".into(),
+                content_type: "text/html; charset=utf-8".into(),
+                body: body.clone().into_bytes(),
+            }],
+            ..Default::default()
+        });
+        let answer = ask_gateway(&mut guest, "/help.html?x=1", 40010);
+        assert!(
+            answer.starts_with("HTTP/1.1 200 OK\r\n"),
+            "{}",
+            &answer[..60]
+        );
+        assert!(answer.contains("Content-Type: text/html; charset=utf-8\r\n"));
+        assert!(answer.ends_with(&body), "the whole page arrived");
+        let answer = ask_gateway(&mut guest, "/../etc/passwd", 40011);
+        assert!(answer.starts_with("HTTP/1.1 404 "), "{answer}");
+
+        // The gateway's other ports stay shut, and with no pages so does 80.
+        let h = guest.connect(GATEWAY, 8080, 40012);
+        guest.pump("another port to be refused", |sockets| {
+            sockets.get::<tcp::Socket>(h).state() == tcp::State::Closed
+        });
+        let mut bare = Guest::new(true);
+        let h = bare.connect(GATEWAY, 80, 40013);
+        bare.pump("port 80 to be refused without pages", |sockets| {
+            sockets.get::<tcp::Socket>(h).state() == tcp::State::Closed
+        });
+    }
+
     #[test]
     fn loopback_and_the_private_network_are_not_forwarded() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -965,7 +1118,10 @@ mod tests {
             answer.extend_from_slice(&buf[..n]);
             server.send_to(&answer, from).unwrap();
         });
-        let (nat, rx) = nat(true);
+        let (nat, rx) = nat(Options {
+            allow_loopback: true,
+            ..Default::default()
+        });
         nat.frame(from_guest(5555, (Ipv4Addr::LOCALHOST, port), b"ping"));
         let (from, to_port, data) = udp_reply(&rx);
         assert_eq!(
@@ -978,7 +1134,10 @@ mod tests {
 
     #[test]
     fn the_guest_is_given_its_address() {
-        let (nat, rx) = nat(false);
+        let (nat, rx) = nat(Options {
+            allow_loopback: false,
+            ..Default::default()
+        });
         for (kind, answer) in [
             (packet::DHCP_DISCOVER, packet::DHCP_OFFER),
             (packet::DHCP_REQUEST, packet::DHCP_ACK),
@@ -1006,7 +1165,10 @@ mod tests {
 
     #[test]
     fn names_are_looked_up_with_the_hosts_resolver() {
-        let (nat, rx) = nat(false);
+        let (nat, rx) = nat(Options {
+            allow_loopback: false,
+            ..Default::default()
+        });
         let query = |name: &str, qtype: u16| {
             let mut q = vec![0xab, 0xcd, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
             for label in name.split('.') {
